@@ -56,7 +56,14 @@ class TelemetryManager:
         async def msg_handler(msg):
             data = msgpack.unpackb(msg.data, raw=False)
             await msg.ack()
-            await invoke_callback(callback, data)
+
+            tokens = msg.subject.split('.')
+            metric_name = tokens[-1]
+
+            await invoke_callback(callback, {
+                'metric': metric_name,
+                'data': data,
+            })
 
         self._ctx.register_subscription({
             'key': f'telemetry:{key}',
