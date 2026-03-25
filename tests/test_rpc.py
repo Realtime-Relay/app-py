@@ -101,7 +101,7 @@ class TestRPCCall:
 
     @pytest.mark.asyncio
     async def test_invalid_timeout_raises(self, rpc):
-        with pytest.raises(ValueError, match='must be a positive number'):
+        with pytest.raises(ValueError, match='must be a non-negative number'):
             await rpc.call({
                 'device_ident': 'sensor-1',
                 'name': 'op',

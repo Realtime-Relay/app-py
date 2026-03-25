@@ -48,6 +48,7 @@ class EphemeralOwner:
     async def start(self):
         await self._acquire_lock()
         self._start_heartbeat()
+        self._start_recovery_check()
         await self._subscribe_data_topic()
         await self._subscribe_rpcs()
 
@@ -151,6 +152,9 @@ class EphemeralOwner:
         stream = f'{self._ctx.org_id}_stream'
         rule_id = get_rule_id(self._rule)
         consumer_name_prefix = f'apppy_ephemeral_{rule_id}'
+
+        self._ctx.logger.info(f'Subscribing to subject: {subject}')
+        self._ctx.logger.info(f'Stream: {stream}')
 
         sub = await self._ctx.jetstream.subscribe(
             subject,

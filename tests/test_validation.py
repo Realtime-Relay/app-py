@@ -349,16 +349,15 @@ class TestValidatePositiveNumber:
     def test_valid_float(self):
         validate_positive_number(1.5, 'timeout')
 
-    def test_zero_raises(self):
-        with pytest.raises(ValueError, match='must be a positive number'):
-            validate_positive_number(0, 'timeout')
+    def test_zero_is_valid(self):
+        validate_positive_number(0, 'timeout')
 
     def test_negative_raises(self):
-        with pytest.raises(ValueError, match='must be a positive number'):
+        with pytest.raises(ValueError, match='must be a non-negative number'):
             validate_positive_number(-1, 'timeout')
 
     def test_string_raises(self):
-        with pytest.raises(ValueError, match='must be a positive number'):
+        with pytest.raises(ValueError, match='must be a non-negative number'):
             validate_positive_number('ten', 'timeout')
 
 

@@ -122,8 +122,8 @@ def validate_connected(connected):
 
 
 def validate_positive_number(value, field_name):
-    if not isinstance(value, (int, float)) or value <= 0:
-        raise ValueError(f'{field_name} must be a positive number')
+    if not isinstance(value, (int, float)) or value < 0:
+        raise ValueError(f'{field_name} must be a non-negative number')
 
 
 def validate_iso8601(value, field_name):
