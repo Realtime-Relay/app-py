@@ -2,10 +2,16 @@ import traceback
 
 
 class Logger:
-    """Simple logger that only prints when mode is 'test'."""
+    """Simple logger that only prints when debug is True."""
 
-    def __init__(self, env):
-        self._enabled = (env == 'test')
+    def __init__(self, debug):
+        self._enabled = debug
+
+    def set_debug(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('debug must be a boolean')
+
+        self._enabled = enabled
 
     def error(self, msg, exc=None):
         if not self._enabled:
@@ -38,13 +44,13 @@ class Logger:
 class Context:
     """Shared state across all managers."""
 
-    def __init__(self, api_key, secret, org_id, env):
+    def __init__(self, api_key, secret, org_id, env, debug=False):
         self.api_key = api_key
         self.secret = secret
         self.org_id = org_id
         self.env = env
 
-        self.logger = Logger(env)
+        self.logger = Logger(debug)
 
         self.nats_client = None
         self.jetstream = None

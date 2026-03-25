@@ -29,6 +29,10 @@ class RelayApp:
         if config.get('mode') not in ('production', 'test'):
             raise ValueError('mode must be "production" or "test"')
 
+        debug = config.get('debug', False)
+        if not isinstance(debug, bool):
+            raise ValueError('debug must be a boolean')
+
         org_id = self._extract_org_id(config['api_key'])
 
         if not org_id:
@@ -39,6 +43,7 @@ class RelayApp:
             secret=config['secret'],
             org_id=org_id,
             env=config['mode'],
+            debug=debug,
         )
 
         # Wire up all managers
@@ -78,6 +83,12 @@ class RelayApp:
 
         except Exception:
             raise ValueError('Invalid api_key: could not decode JWT to extract org_id')
+
+    def set_debug(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('debug must be a boolean')
+
+        self._ctx.logger.set_debug(enabled)
 
     async def connect(self):
         return await self.connection.connect()

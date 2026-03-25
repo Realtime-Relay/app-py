@@ -233,6 +233,13 @@ class ConnectionManager:
                 self._ctx.logger.error(f"Failed to resubscribe {entry.get('key')}", e)
 
     async def _resubscribe_jetstream(self, entry):
+        old_sub = entry.get('sub_ref')
+        if old_sub:
+            try:
+                await old_sub.unsubscribe()
+            except Exception:
+                pass
+
         subject = entry['subject']
         stream = entry['stream']
         consumer_name = f"{entry['consumer_name_prefix']}_{uuid.uuid4()}"
@@ -255,6 +262,13 @@ class ConnectionManager:
         asyncio.create_task(self._consume_generic(sub, callback))
 
     async def _resubscribe_core(self, entry):
+        old_sub = entry.get('sub_ref')
+        if old_sub:
+            try:
+                await old_sub.unsubscribe()
+            except Exception:
+                pass
+
         subject = entry['subject']
         callback = entry['callback']
 
