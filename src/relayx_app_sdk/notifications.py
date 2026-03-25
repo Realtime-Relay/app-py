@@ -42,11 +42,13 @@ class NotificationManager:
             if not config.get('template'):
                 raise ValueError('config.template is required for EMAIL')
 
-        return await self._request('create', {
+        res = await self._request('create', {
             'name': params['name'],
             'type': notif_type,
             'config': config,
         })
+
+        return res.get('data')
 
     async def update(self, params):
         validate_connected(self._ctx.connected)
@@ -67,7 +69,9 @@ class NotificationManager:
         if params.get('id'):
             payload['id'] = params['id']
 
-        return await self._request('update', payload)
+        res = await self._request('update', payload)
+
+        return res.get('data')
 
     async def delete(self, notif_id):
         validate_connected(self._ctx.connected)

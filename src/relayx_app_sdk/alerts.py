@@ -132,6 +132,7 @@ class AlertManager:
             'config': params.get('config'),
             'notification_channel': params.get('notification_channel', []),
             'alert_mute_config': params.get('alert_mute_config'),
+            'env': self._ctx.env,
         }
 
         res = await self._request('create', payload)

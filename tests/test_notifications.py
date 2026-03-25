@@ -26,7 +26,7 @@ class TestNotificationCreate:
     @pytest.mark.asyncio
     async def test_create_webhook(self, notifications, ctx):
         ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({'status': 'ok'})
+            return_value=make_nats_response({'status': 'ok', 'data': {'name': 'test', 'type': 'WEBHOOK'}})
         )
 
         result = await notifications.create({
@@ -40,7 +40,7 @@ class TestNotificationCreate:
     @pytest.mark.asyncio
     async def test_create_email(self, notifications, ctx):
         ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({'status': 'ok'})
+            return_value=make_nats_response({'status': 'ok', 'data': {'name': 'test', 'type': 'WEBHOOK'}})
         )
 
         result = await notifications.create({
@@ -130,7 +130,7 @@ class TestNotificationUpdate:
     @pytest.mark.asyncio
     async def test_update(self, notifications, ctx):
         ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({'status': 'ok'})
+            return_value=make_nats_response({'status': 'ok', 'data': {'name': 'test', 'type': 'WEBHOOK'}})
         )
 
         result = await notifications.update({
