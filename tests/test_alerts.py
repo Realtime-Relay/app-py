@@ -151,6 +151,47 @@ class TestAlertCreateEphemeral:
                 },
             })
 
+    @pytest.mark.asyncio
+    async def test_invalid_recovery_eval_type_raises(self, alerts):
+        with pytest.raises(ValueError, match='recovery_eval_type must be'):
+            await alerts.create_ephemeral({
+                'name': 'x',
+                'config': {
+                    'topic': {
+                        'source': 'TELEMETRY',
+                        'device_ident': 'x',
+                        'last_token': 'y',
+                    },
+                    'duration': 1,
+                    'recovery_duration': 1,
+                    'recovery_eval_type': 'INVALID',
+                },
+            })
+
+    @pytest.mark.asyncio
+    async def test_valid_recovery_eval_type_timer(self, alerts, ctx):
+        ctx.nats_client.request = AsyncMock(
+            return_value=make_nats_response({
+                'data': {'id': 'eph-2', 'name': 'evt', 'type': 'EPHEMERAL'},
+            })
+        )
+
+        result = await alerts.create_ephemeral({
+            'name': 'evt',
+            'config': {
+                'topic': {
+                    'source': 'EVENT',
+                    'device_ident': 's-1',
+                    'last_token': 'door_opened',
+                },
+                'duration': 1,
+                'recovery_duration': 5,
+                'recovery_eval_type': 'TIMER',
+            },
+        })
+
+        assert result['id'] == 'eph-2'
+
 
 # ──────────────────────────────────────────────────────────────
 # update
@@ -172,9 +213,56 @@ class TestAlertUpdate:
         assert hasattr(result, 'listen')
 
     @pytest.mark.asyncio
+    async def test_update_injects_env(self, alerts, ctx):
+        ctx.nats_client.request = AsyncMock(
+            return_value=make_nats_response({
+                'data': {'id': 'alert-1', 'name': 'updated'},
+            })
+        )
+
+        await alerts.update({'id': 'alert-1', 'name': 'updated'})
+
+        call_data = json.loads(ctx.nats_client.request.call_args[0][1])
+        assert call_data['env'] == 'test'
+
+    @pytest.mark.asyncio
     async def test_missing_id_raises(self, alerts):
         with pytest.raises(ValueError, match='id is required'):
             await alerts.update({'name': 'x'})
+
+
+# ──────────────────────────────────────────────────────────────
+# update_ephemeral
+# ──────────────────────────────────────────────────────────────
+
+class TestAlertUpdateEphemeral:
+
+    @pytest.mark.asyncio
+    async def test_invalid_recovery_eval_type_raises(self, alerts):
+        with pytest.raises(ValueError, match='recovery_eval_type must be'):
+            await alerts.update_ephemeral({
+                'id': 'eph-1',
+                'config': {
+                    'recovery_eval_type': 'BOGUS',
+                },
+            })
+
+    @pytest.mark.asyncio
+    async def test_valid_recovery_eval_type_passes(self, alerts, ctx):
+        ctx.nats_client.request = AsyncMock(
+            return_value=make_nats_response({
+                'data': {'id': 'eph-1', 'type': 'EPHEMERAL'},
+            })
+        )
+
+        result = await alerts.update_ephemeral({
+            'id': 'eph-1',
+            'config': {
+                'recovery_eval_type': 'TIMER',
+            },
+        })
+
+        assert result['id'] == 'eph-1'
 
 
 # ──────────────────────────────────────────────────────────────

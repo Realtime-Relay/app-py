@@ -93,6 +93,7 @@ Covers: app.alert.create, update, delete, list, get, ack, ack_all,
 @raises ValueError — If name is missing or fails validation
 @raises ValueError — If config.topic.source is not TELEMETRY/COMMAND/EVENT
 @raises ValueError — If duration or recovery_duration are missing/not positive
+@raises ValueError — If recovery_eval_type is provided and not VALUE or TIMER
 @raises RuntimeError — If not connected
 
 @nats_subject api.iot.alerts.{org_id}.create_ephemeral
@@ -164,6 +165,7 @@ Covers: app.alert.create, update, delete, list, get, ack, ack_all,
     - (any other alert fields to update)
 
 @raises ValueError — If id is missing
+@raises ValueError — If recovery_eval_type is provided and not VALUE or TIMER
 @raises RuntimeError — If not connected
 
 @nats_subject api.iot.alerts.{org_id}.update_ephemeral
