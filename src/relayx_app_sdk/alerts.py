@@ -166,6 +166,10 @@ class AlertManager:
         validate_positive_number(config.get('duration'), 'config.duration')
         validate_positive_number(config.get('recovery_duration'), 'config.recovery_duration')
 
+        recovery_eval_type = config.get('recovery_eval_type')
+        if recovery_eval_type is not None and recovery_eval_type not in ('VALUE', 'TIMER'):
+            raise ValueError('config.recovery_eval_type must be "VALUE" or "TIMER"')
+
         payload = {
             'name': params['name'],
             'description': params.get('description'),
@@ -201,6 +205,11 @@ class AlertManager:
 
         if not params.get('id'):
             raise ValueError('id is required')
+
+        config = params.get('config', {})
+        recovery_eval_type = config.get('recovery_eval_type')
+        if recovery_eval_type is not None and recovery_eval_type not in ('VALUE', 'TIMER'):
+            raise ValueError('config.recovery_eval_type must be "VALUE" or "TIMER"')
 
         payload = {**params, 'type': 'EPHEMERAL', 'env': self._ctx.env}
         res = await self._request('update_ephemeral', payload)
