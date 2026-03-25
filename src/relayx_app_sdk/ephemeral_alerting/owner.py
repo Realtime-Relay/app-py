@@ -48,7 +48,12 @@ class EphemeralOwner:
     # ─── Public API ────────────────────────────────────────────
 
     async def start(self):
-        await self._acquire_lock()
+        lock_acquired = await self._acquire_lock()
+
+        if not lock_acquired:
+            self._running = False
+            raise RuntimeError('Evaluator already active for this rule')
+
         self._start_heartbeat()
         self._start_recovery_check()
         await self._subscribe_data_topic()
@@ -523,7 +528,15 @@ class EphemeralOwner:
         rule_id = get_rule_id(self._rule)
         key = f'ephemeral_owner_{rule_id}'
 
-        # Check for existing lock
+        now = int(time.time() * 1000)
+        owner_id = str(uuid.uuid4())
+        lock_value = json.dumps({
+            'owner_id': owner_id,
+            'started_at': now,
+            'expires_at': now + 30000,
+        }).encode()
+
+        # Check if lock exists and is active
         try:
             entry = await kv.get(key)
 
@@ -531,22 +544,25 @@ class EphemeralOwner:
                 lock_data = json.loads(entry.value.decode())
                 expires_at = lock_data.get('expires_at', 0)
 
-                if int(time.time() * 1000) > expires_at:
-                    await kv.delete(key)
+                if now > expires_at:
+                    await kv.update(key, lock_value, entry.revision)
+                    return True
                 else:
                     return False
         except Exception:
             pass
 
-        # Create lock
+        # No active lock — write and verify
         try:
-            value = json.dumps({
-                'started_at': int(time.time() * 1000),
-                'expires_at': int(time.time() * 1000) + 30000,
-            }).encode()
+            await kv.put(key, lock_value)
 
-            await kv.create(key, value)
-            return True
+            verify = await kv.get(key)
+            verify_data = json.loads(verify.value.decode())
+
+            if verify_data.get('owner_id') == owner_id:
+                return True
+
+            return False
         except Exception:
             return False
 
@@ -654,7 +670,7 @@ class EphemeralOwner:
         if self._kv_bucket:
             try:
                 rule_id = get_rule_id(self._rule)
-                await self._kv_bucket.delete(f'ephemeral_owner_{rule_id}')
+                await self._kv_bucket.purge(f'ephemeral_owner_{rule_id}')
             except Exception as e:
                 self._ctx.logger.error('Failed to release lock', e)
 
