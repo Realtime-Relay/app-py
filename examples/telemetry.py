@@ -1,0 +1,100 @@
+"""
+Telemetry Example
+=================
+
+Demonstrates how to stream live telemetry, query history, and fetch latest values.
+
+Usage:
+    python examples/telemetry.py
+
+Requires:
+    - RELAY_API_KEY environment variable
+    - RELAY_SECRET environment variable
+"""
+
+import asyncio
+import json
+import os
+
+from relayx_app_sdk import RelayApp
+
+
+API_KEY = os.environ.get('RELAY_API_KEY', '')
+SECRET = os.environ.get('RELAY_SECRET', '')
+
+
+async def main():
+
+    # ── Initialize ────────────────────────────────────────────
+
+    app = RelayApp({
+        'api_key': API_KEY,
+        'secret': SECRET,
+        'mode': 'test',
+    })
+
+    app.connection.listeners(lambda event: print(f'[connection] {event}'))
+
+    await app.connect()
+    print('Connected.\n')
+
+
+    # ── Stream live telemetry ─────────────────────────────────
+
+    def on_temp(data):
+        print(f'  [temp] {data}')
+
+    await app.telemetry.stream({
+        'device_ident': 's-3',
+        'metric': '*',
+        'callback': on_temp,
+    })
+
+    print('Streaming temp from s-3 for 15 seconds...')
+    await asyncio.sleep(15)
+
+
+    # ── Stop streaming ────────────────────────────────────────
+
+    await app.telemetry.off({
+        'device_ident': 's-3',
+        'metric': ['temperature'],
+    })
+
+    print('Stopped streaming temp.\n')
+
+
+    # ── Query telemetry history ───────────────────────────────
+
+    history = await app.telemetry.history({
+        'device_ident': 's-3',
+        'fields': ['temperature'],
+        'start': '2025-01-01T00:00:00.000Z',
+        'end': '2026-12-31T23:59:59.000Z',
+    })
+
+    print('Telemetry history:')
+    print(json.dumps(history, indent=4))
+    print()
+
+
+    # ── Fetch latest values ───────────────────────────────────
+
+    latest = await app.telemetry.latest({
+        'device_ident': 's-3',
+        'fields': ['temperature'],
+    })
+
+    print('Latest telemetry:')
+    print(json.dumps(latest, indent=4))
+    print()
+
+
+    # ── Cleanup ───────────────────────────────────────────────
+
+    await app.disconnect()
+    print('Disconnected.')
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

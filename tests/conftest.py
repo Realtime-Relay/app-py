@@ -1,0 +1,142 @@
+"""
+Shared fixtures for all tests.
+
+Provides mock NATS client, JetStream, KV bucket, and a fully wired-up
+Context object that every manager test can import.
+"""
+
+import asyncio
+import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
+
+from relayx_app_sdk.context import Context
+
+
+# ---------------------------------------------------------------------------
+# Mock NATS message
+# ---------------------------------------------------------------------------
+
+class MockMsg:
+    """Simulates a NATS message with .data, .subject, .ack(), .respond()."""
+
+    def __init__(self, data, subject='test.subject'):
+        self.data = data
+        self.subject = subject
+        self.ack = AsyncMock()
+        self.respond = AsyncMock()
+
+
+def make_nats_response(payload_dict):
+    """Build a MockMsg whose .data is JSON-encoded bytes."""
+    return MockMsg(json.dumps(payload_dict).encode())
+
+
+# ---------------------------------------------------------------------------
+# Mock JetStream subscription
+# ---------------------------------------------------------------------------
+
+class MockJetStreamSub:
+    """Simulates a JetStream push subscription returned by js.subscribe()."""
+
+    def __init__(self):
+        self.unsubscribe = AsyncMock()
+        self.messages = self._empty_iter()
+
+    async def _empty_iter(self):
+        return
+        yield  # makes this an async generator
+
+
+# ---------------------------------------------------------------------------
+# Context fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_nats_client():
+    """A mock nats.Client with .request() and .subscribe()."""
+
+    client = AsyncMock()
+    client.request = AsyncMock()
+    client.subscribe = AsyncMock(return_value=MockJetStreamSub())
+    client.close = AsyncMock()
+
+    return client
+
+
+@pytest.fixture
+def mock_jetstream():
+    """A mock JetStreamContext with .subscribe() and .publish()."""
+
+    js = AsyncMock()
+    js.subscribe = AsyncMock(return_value=MockJetStreamSub())
+    js.publish = AsyncMock()
+
+    return js
+
+
+@pytest.fixture
+def mock_kv_bucket():
+    """A mock KV bucket with .get(), .put(), .create(), .delete()."""
+
+    kv = AsyncMock()
+    kv.get = AsyncMock()
+    kv.put = AsyncMock()
+    kv.create = AsyncMock()
+    kv.delete = AsyncMock()
+
+    return kv
+
+
+@pytest.fixture
+def ctx(mock_nats_client, mock_jetstream, mock_kv_bucket):
+    """
+    A fully-wired Context with mocked NATS infrastructure.
+
+    - connected = True  (most tests need this)
+    - device manager attached with a pre-populated cache
+    """
+
+    context = Context(
+        api_key='test-key',
+        secret='test-secret',
+        org_id='org123',
+        env='test',
+    )
+
+    context.nats_client = mock_nats_client
+    context.jetstream = mock_jetstream
+    context.kv_bucket = mock_kv_bucket
+    context.connected = True
+
+    # Attach a minimal mock DeviceManager so resolve_device_id works
+    device_mgr = AsyncMock()
+    device_mgr.cache = {
+        'sensor-1': {'id': 'dev-id-1', 'ident': 'sensor-1', 'schema': {'temp': {}}},
+        'sensor-2': {'id': 'dev-id-2', 'ident': 'sensor-2', 'schema': {'humidity': {}}},
+    }
+
+    async def _resolve(ident):
+        cached = device_mgr.cache.get(ident)
+        if cached:
+            return cached['id']
+        raise ValueError(f'Device not found: {ident}')
+
+    async def _resolve_many(idents):
+        ids = []
+        for i in idents:
+            try:
+                ids.append(await _resolve(i))
+            except ValueError:
+                pass
+        return ids
+
+    device_mgr.resolve_device_id = _resolve
+    device_mgr.resolve_device_ids = _resolve_many
+    device_mgr.get = AsyncMock(return_value={'id': 'dev-id-1', 'ident': 'sensor-1', 'schema': {'temp': {}}})
+    device_mgr.list = AsyncMock(return_value=[])
+    device_mgr.clear_cache = MagicMock()
+
+    context.device = device_mgr
+
+    return context
