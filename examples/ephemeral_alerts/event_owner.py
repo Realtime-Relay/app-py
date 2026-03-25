@@ -57,7 +57,7 @@ async def main():
 
     # ── Get or create the ephemeral alert ─────────────────────
 
-    eph_alert = await app.alert.get({'name': 'ephemeral_event_door'})
+    eph_alert = await app.alert.get('ephemeral_event_door')
 
     if eph_alert is None:
         eph_alert = await app.alert.create_ephemeral({
@@ -72,6 +72,7 @@ async def main():
                 'duration': 0,
                 'recovery_duration': 30,
                 'cooldown': 15,
+                'recovery_eval_type': "TIMER"
             },
             'notification_channel': [],
         })

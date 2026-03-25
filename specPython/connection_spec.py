@@ -67,7 +67,7 @@ Covers: RelayApp constructor, connect, disconnect,
              populates device cache, and starts status monitoring.
              Idempotent — calling connect() when already connected is a no-op.
 
-@nats_servers ["wss://api.relay-x.io:4421", "wss://api.relay-x.io:4422", "wss://api.relay-x.io:4423"]
+@nats_servers ["tls://api.relay-x.io:4221", "tls://api.relay-x.io:4222", "tls://api.relay-x.io:4223"]
 
 @raises Exception — On connection failure (auth_failed, network error)
 

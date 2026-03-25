@@ -85,6 +85,9 @@ Covers: app.alert.create, update, delete, list, get, ack, ack_all,
         - duration: float                      — Required. Seconds breach must hold before FIRE.
         - recovery_duration: float             — Required. Seconds clear must hold before RESOLVED.
         - cooldown: float                      — Optional. Seconds between re-fires. Defaults to 0.
+        - recovery_eval_type: str              — Optional. "VALUE" (default) | "TIMER".
+            VALUE: Recovery only when evaluator returns False (requires data flow).
+            TIMER: Recovery after recovery_duration of silence (no data). Good for events.
     - notification_channel: list[str]          — Optional. Defaults to [].
 
 @raises ValueError — If name is missing or fails validation
@@ -178,7 +181,7 @@ Covers: app.alert.create, update, delete, list, get, ack, ack_all,
 @method alert.delete
 @description Deletes an alert rule by ID.
 
-@param alert_id: str — Required. Alert rule ID.
+@param alert_id: str — Required. Alert rule ID (passed directly, not as dict).
 
 @raises ValueError — If id is missing
 @raises RuntimeError — If not connected
@@ -217,7 +220,7 @@ Covers: app.alert.create, update, delete, list, get, ack, ack_all,
 @description Gets a single alert rule by name. Returns appropriate wrapper
              based on type (EPHEMERAL vs THRESHOLD/RATE_CHANGE).
 
-@param alert_name: str — Required. Alert name. [a-zA-Z0-9_-]+
+@param alert_name: str — Required. Alert name (passed directly, not as dict). [a-zA-Z0-9_-]+
 
 @nats_subject api.iot.alerts.{org_id}.get
 @returns AlertObject | EphemeralAlertObject | None
@@ -363,7 +366,7 @@ RPC HANDLERS:
 @method alert.unmute
 @description Unmutes an alert rule. Uses same subject as mute with type="CLEAR".
 
-@param alert_id: str — Required. Alert rule ID.
+@param alert_id: str — Required. Alert rule ID (passed directly, not as dict).
 
 @returns dict — Updated rule
 
@@ -533,15 +536,24 @@ STATE MACHINE:
 
 EVALUATION FLOW (per incoming data message):
 1. Decode msgpack, ack message
-2. Update rolling state
-3. Check mute -> skip if muted
-4. Check staleness -> reset if gap > duration
-5. Run evaluator(rolling_state) -> bool
+2. Track _last_data_at timestamp
+3. Update rolling state
+4. Check mute -> skip if muted
+5. Check staleness -> reset if gap > duration
+6. Run evaluator(rolling_state) -> bool
    - If throws: call on_error(err), skip cycle
    - If non-bool: call on_error(TypeError), skip cycle
-6. State transitions:
+7. State transitions:
    BREACHED: track breached_since, fire if duration met, re-fire if cooldown elapsed
    CLEAR: track clear_since, resolve if recovery_duration met
+
+RECOVERY EVAL TYPE (config.recovery_eval_type):
+    VALUE (default): Recovery only triggers when evaluator returns False.
+        Requires continuous data flow. Best for TELEMETRY (values always arriving).
+    TIMER: Recovery triggers after recovery_duration of silence (no data arriving).
+        Background tick checks _last_data_at vs recovery_duration.
+        Tick interval = max(1s, min(30s, recovery_duration / 2)).
+        Best for EVENT/COMMAND where silence = normal.
 
 NOTIFICATION DISPATCH SUBJECT: api.iot.alerts.{org_id}.dispatch
 

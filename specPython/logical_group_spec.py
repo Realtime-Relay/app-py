@@ -76,19 +76,18 @@ Covers: app.logical_group.create, update, delete, list, get,
 @request_payload
 {
     "id": str,
-    "devices": {"add": list[str], "remove": list[str]},   # Resolved device_ids — always sent, defaults to empty
-    "tags": {"add": list[str], "remove": list[str]}        # Always sent, defaults to empty
+    "devices": {"add": list[str], "remove": list[str]},   # Only sent if provided
+    "tags": {"add": list[str], "remove": list[str]}        # Only sent if provided
 }
 
 @behavior
-- devices and tags are always included in the payload
-- If not provided by the caller, they default to {"add": [], "remove": []}
+- devices and tags are only included in the payload if provided by the caller
 - device idents in devices.add / devices.remove are resolved to device_ids
 
 @returns LogicalGroup | None
 
 @example
-    # Update only tags (devices defaults to {add: [], remove: []})
+    # Update only tags
     group = await app.logical_group.update({
         "id": "<group_id>",
         "tags": {"add": ["humidity"], "remove": ["floor_1"]},

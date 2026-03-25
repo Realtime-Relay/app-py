@@ -51,7 +51,7 @@ async def main():
 
     # ── Get or create the ephemeral alert ─────────────────────
 
-    eph_alert = await app.alert.get({'name': 'ephemeral_multi_metric'})
+    eph_alert = await app.alert.get('ephemeral_multi_metric')
 
     if eph_alert is None:
         eph_alert = await app.alert.create_ephemeral({
@@ -151,7 +151,7 @@ async def main():
     print('Engine stopped.')
 
     # Uncomment to delete the alert on exit:
-    # await app.alert.delete({'id': eph_alert['id']})
+    # await app.alert.delete(eph_alert['id'])
 
     await app.disconnect()
     print('Disconnected.')

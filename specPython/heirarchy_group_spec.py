@@ -68,19 +68,18 @@ Covers: app.heirarchy_group.create, update, delete, list, get,
 @request_payload
 {
     "id": str,
-    "devices": {"add": list[str], "remove": list[str]},   # Resolved device_ids — always sent, defaults to empty
+    "devices": {"add": list[str], "remove": list[str]},   # Only sent if provided
     "heirarchy": str                                        # Only sent if provided
 }
 
 @behavior
-- devices is always included in the payload
-- If not provided by the caller, defaults to {"add": [], "remove": []}
+- devices is only included in the payload if provided by the caller
 - device idents in devices.add / devices.remove are resolved to device_ids
 
 @returns HeirarchyGroup | None
 
 @example
-    # Update only hierarchy path (devices defaults to {add: [], remove: []})
+    # Update only hierarchy path
     group = await app.heirarchy_group.update({
         "id": "<group_id>",
         "heirarchy": "building_a.floor_2",

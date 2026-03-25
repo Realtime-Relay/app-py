@@ -189,13 +189,13 @@ class TestAlertDelete:
             return_value=make_nats_response({'status': 'ALERT_DELETE_SUCCESS'})
         )
 
-        result = await alerts.delete({'id': 'alert-1'})
+        result = await alerts.delete('alert-1')
         assert result is True
 
     @pytest.mark.asyncio
     async def test_missing_id_raises(self, alerts):
         with pytest.raises(ValueError, match='id is required'):
-            await alerts.delete({})
+            await alerts.delete('')
 
 
 # ──────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ class TestAlertGet:
             })
         )
 
-        result = await alerts.get({'name': 'my-alert'})
+        result = await alerts.get('my-alert')
 
         assert result['id'] == 'a1'
         assert hasattr(result, 'listen')
@@ -249,7 +249,7 @@ class TestAlertGet:
             })
         )
 
-        result = await alerts.get({'name': 'eph'})
+        result = await alerts.get('eph')
 
         assert result['id'] == 'e1'
         assert hasattr(result, 'set_evaluator')
@@ -261,7 +261,7 @@ class TestAlertGet:
             return_value=make_nats_response({'status': 'NOT_FOUND'})
         )
 
-        result = await alerts.get({'name': 'nonexistent'})
+        result = await alerts.get('nonexistent')
         assert result is None
 
 
@@ -446,13 +446,13 @@ class TestAlertMute:
             return_value=make_nats_response({'status': 'ok'})
         )
 
-        result = await alerts.unmute({'id': 'alert-1'})
+        result = await alerts.unmute('alert-1')
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_unmute_missing_id_raises(self, alerts):
         with pytest.raises(ValueError, match='id is required'):
-            await alerts.unmute({})
+            await alerts.unmute('')
 
 
 # ──────────────────────────────────────────────────────────────

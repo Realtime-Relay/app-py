@@ -53,7 +53,7 @@ async def main():
 
     # ── Get or create the ephemeral alert ─────────────────────
 
-    eph_alert = await app.alert.get({'name': 'ephemeral_cmd_reboot'})
+    eph_alert = await app.alert.get('ephemeral_cmd_reboot')
 
     if eph_alert is None:
         eph_alert = await app.alert.create_ephemeral({

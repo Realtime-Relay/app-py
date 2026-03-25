@@ -1,5 +1,6 @@
 """Tests for the ephemeral alerting subsystem — shared, engine, owner, listener."""
 
+import asyncio
 import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -418,6 +419,152 @@ class TestEphemeralOwnerStateMachine:
 # ══════════════════════════════════════════════════════════════
 # owner.py — ack (checks alerting state, matches JS)
 # ══════════════════════════════════════════════════════════════
+
+
+class TestEphemeralOwnerTimerRecovery:
+
+    def _make_owner_timer(self, ctx, evaluator=None, callbacks=None, recovery_duration=5):
+        rule = {
+            'id': 'r1',
+            'name': 'event-rule',
+            'config': {
+                'topic': {
+                    'source': 'EVENT',
+                    'device_ident': 'sensor-1',
+                    'last_token': 'door_opened',
+                },
+                'duration': 0,
+                'recovery_duration': recovery_duration,
+                'cooldown': 0,
+                'recovery_eval_type': 'TIMER',
+            },
+        }
+
+        return EphemeralOwner(
+            ctx,
+            rule,
+            evaluator or (lambda state: True),
+            callbacks or {},
+        )
+
+    def test_recovery_task_not_started_for_value_type(self, ctx):
+        rule = {
+            'id': 'r1',
+            'name': 'test',
+            'config': {
+                'topic': {'source': 'TELEMETRY', 'device_ident': '*', 'last_token': '*'},
+                'duration': 0,
+                'recovery_duration': 5,
+                'cooldown': 0,
+                'recovery_eval_type': 'VALUE',
+            },
+        }
+
+        owner = EphemeralOwner(ctx, rule, lambda s: True, {})
+        owner._start_recovery_check()
+
+        assert owner._recovery_task is None
+
+    @pytest.mark.asyncio
+    async def test_recovery_task_started_for_timer_type(self, ctx):
+        owner = self._make_owner_timer(ctx)
+        owner._start_recovery_check()
+
+        assert owner._recovery_task is not None
+
+        # Clean up
+        owner._running = False
+        owner._recovery_task.cancel()
+
+    def test_default_recovery_eval_type_is_value(self, ctx):
+        rule = {
+            'id': 'r1',
+            'name': 'test',
+            'config': {
+                'topic': {'source': 'TELEMETRY', 'device_ident': '*', 'last_token': '*'},
+                'duration': 0,
+                'recovery_duration': 5,
+                'cooldown': 0,
+            },
+        }
+
+        owner = EphemeralOwner(ctx, rule, lambda s: True, {})
+        owner._start_recovery_check()
+
+        assert owner._recovery_task is None
+
+    @pytest.mark.asyncio
+    async def test_timer_recovery_resolves_on_silence(self, ctx):
+        resolved = []
+        ctx.jetstream.publish = AsyncMock(return_value='ack')
+        ctx.nats_client.request = AsyncMock()
+
+        owner = self._make_owner_timer(
+            ctx,
+            recovery_duration=1,
+            callbacks={'on_resolved': lambda p: resolved.append(p)},
+        )
+
+        subject = 'org123.test.events.dev-id-1.door_opened'
+
+        # Trigger: breach -> fire
+        owner._update_rolling_state(subject, {'door': 'opened'})
+        await owner._evaluate(subject, {'door': 'opened'})
+
+        assert owner._state['status'] == 'alerting'
+
+        # Simulate last data at 2 seconds ago
+        owner._last_data_at = int(time.time() * 1000) - 2000
+
+        # Start recovery check
+        owner._start_recovery_check()
+
+        # Wait for the tick to fire (recovery_duration=1s, tick=1s)
+        await asyncio.sleep(1.5)
+
+        # Should have resolved
+        assert owner._state['status'] == 'normal'
+        assert len(resolved) == 1
+
+        # Clean up
+        owner._running = False
+        owner._recovery_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_timer_recovery_does_not_resolve_during_data_flow(self, ctx):
+        resolved = []
+        ctx.jetstream.publish = AsyncMock(return_value='ack')
+        ctx.nats_client.request = AsyncMock()
+
+        owner = self._make_owner_timer(
+            ctx,
+            recovery_duration=10,
+            callbacks={'on_resolved': lambda p: resolved.append(p)},
+        )
+
+        subject = 'org123.test.events.dev-id-1.door_opened'
+
+        # Trigger: breach -> fire
+        owner._update_rolling_state(subject, {'door': 'opened'})
+        await owner._evaluate(subject, {'door': 'opened'})
+
+        assert owner._state['status'] == 'alerting'
+
+        # Set last_data_at to just now — silence hasn't exceeded recovery_duration
+        owner._last_data_at = int(time.time() * 1000)
+
+        owner._start_recovery_check()
+
+        # Wait a tick
+        await asyncio.sleep(1.5)
+
+        # Should still be alerting (silence < recovery_duration=10s)
+        assert owner._state['status'] == 'alerting'
+        assert len(resolved) == 0
+
+        # Clean up
+        owner._running = False
+        owner._recovery_task.cancel()
 
 
 class TestEphemeralOwnerAck:

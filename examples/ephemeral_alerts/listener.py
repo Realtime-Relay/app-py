@@ -60,7 +60,7 @@ async def main():
 
     # ── Get the ephemeral alert (created by owner.py) ─────────
 
-    eph_alert = await app.alert.get({'name': ALERT_NAME})
+    eph_alert = await app.alert.get(ALERT_NAME)
 
     if not eph_alert:
         print(f'Alert "{ALERT_NAME}" not found. Run owner.py first.')

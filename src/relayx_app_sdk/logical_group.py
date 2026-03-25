@@ -81,7 +81,7 @@ class LogicalGroupManager:
 
         payload = {'id': params['id']}
 
-        devices = params.get('devices', {})
+        devices = params.get('devices')
         if devices:
             add_idents = devices.get('add', [])
             remove_idents = devices.get('remove', [])

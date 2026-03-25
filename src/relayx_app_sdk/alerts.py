@@ -188,7 +188,8 @@ class AlertManager:
         if not params.get('id'):
             raise ValueError('id is required')
 
-        res = await self._request('update', params)
+        payload = {**params, 'env': self._ctx.env}
+        res = await self._request('update', payload)
 
         if res.get('data'):
             return self._wrap_alert(res['data'])
@@ -209,10 +210,9 @@ class AlertManager:
 
         return None
 
-    async def delete(self, params):
+    async def delete(self, alert_id):
         validate_connected(self._ctx.connected)
 
-        alert_id = params.get('id')
         if not alert_id:
             raise ValueError('id is required')
 
@@ -238,10 +238,9 @@ class AlertManager:
 
         return alerts
 
-    async def get(self, params):
+    async def get(self, alert_name):
         validate_connected(self._ctx.connected)
 
-        alert_name = params.get('name')
         validate_ident(alert_name, 'name')
 
         res = await self._request('get', {'name': alert_name})
@@ -440,10 +439,9 @@ class AlertManager:
 
         return await self._request('mute', payload)
 
-    async def unmute(self, params):
+    async def unmute(self, alert_id):
         validate_connected(self._ctx.connected)
 
-        alert_id = params.get('id')
         if not alert_id:
             raise ValueError('id is required')
 

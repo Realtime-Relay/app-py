@@ -40,6 +40,8 @@ class EphemeralOwner:
         self._heartbeat_task = None
         self._consume_task = None
         self._rpc_task = None
+        self._recovery_task = None
+        self._last_data_at = None
         self._running = True
 
 
@@ -54,6 +56,15 @@ class EphemeralOwner:
 
     async def stop(self):
         self._running = False
+
+        # Cancel recovery tick
+        if self._recovery_task:
+            self._recovery_task.cancel()
+            try:
+                await self._recovery_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._recovery_task = None
 
         # Unsubscribe data consumer
         if self._data_consumer:
@@ -173,6 +184,7 @@ class EphemeralOwner:
             data = msgpack.unpackb(msg.data, raw=False)
             await msg.ack()
 
+            self._last_data_at = int(time.time() * 1000)
             self._update_rolling_state(msg.subject, data)
             await self._evaluate(msg.subject, data)
 
@@ -560,6 +572,75 @@ class EphemeralOwner:
                 await asyncio.sleep(15)
 
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+    def _start_recovery_check(self):
+        """Start a background tick that auto-resolves alerts during silence.
+        Only active when config.recovery_eval_type == 'TIMER'.
+        When no data arrives for recovery_duration, the alert resolves."""
+
+        config = self._rule.get('config', {})
+        recovery_eval_type = config.get('recovery_eval_type', 'VALUE')
+
+        if recovery_eval_type != 'TIMER':
+            return
+
+        recovery_s = config.get('recovery_duration') or 0
+        recovery_ms = recovery_s * 1000
+
+        # Tick at half the recovery window, floored at 1s, capped at 30s
+        tick_s = max(1, min(30, recovery_s / 2)) if recovery_s > 0 else 5
+
+        async def recovery_loop():
+            while self._running:
+                await asyncio.sleep(tick_s)
+
+                if not self._running:
+                    break
+
+                now = int(time.time() * 1000)
+
+                # Only check when in alerting or acknowledged state
+                if self._state['status'] not in ('alerting', 'acknowledged'):
+                    continue
+
+                # No data has ever arrived
+                if self._last_data_at is None:
+                    continue
+
+                silence_ms = now - self._last_data_at
+
+                if silence_ms >= recovery_ms:
+                    # Auto-resolve: silence exceeded recovery_duration
+                    resolved_payload = build_alert_payload(
+                        self._rule, self._rolling_state, now, '',
+                    )
+
+                    await publish_event(self._ctx, self._rule, 'resolved', resolved_payload)
+
+                    await dispatch_notifications(self._ctx, self._rule, {
+                        'alert': {
+                            'id': get_rule_id(self._rule),
+                            'name': self._rule.get('name'),
+                            'config': config,
+                        },
+                        'device_id': '',
+                        'last_value': self._rolling_state,
+                        'timestamp': now,
+                    })
+
+                    cb = self._callbacks.get('on_resolved')
+                    if cb:
+                        await invoke_callback(cb, resolved_payload)
+
+                    # Reset state
+                    self._state['status'] = 'normal'
+                    self._state['acked_by'] = None
+                    self._state['acked_at'] = None
+                    self._state['ack_notes'] = None
+                    self._state['breached_since'] = None
+                    self._state['clear_since'] = None
+
+        self._recovery_task = asyncio.create_task(recovery_loop())
 
     async def _release_lock(self):
         if self._heartbeat_task:

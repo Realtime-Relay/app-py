@@ -78,7 +78,7 @@ async def main():
 
     # ── Get the alert by name ─────────────────────────────────
 
-    fetched = await app.alert.get({'name': 'high-temp'})
+    fetched = await app.alert.get('high-temp')
 
     if fetched:
         print('Fetched alert:')
@@ -121,7 +121,7 @@ async def main():
     # ── Delete the alert ──────────────────────────────────────
 
     if alert_id:
-        deleted = await app.alert.delete({'id': alert_id})
+        deleted = await app.alert.delete(alert_id)
         print(f'Deleted alert: {deleted}\n')
 
 
