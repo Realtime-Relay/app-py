@@ -156,26 +156,22 @@ class ConnectionManager:
 
         asyncio.create_task(self._consume_presence(sub))
 
-    async def _consume_presence(self, sub):
-        try:
-            async for msg in sub.messages:
-                try:
-                    data = msgpack.unpackb(msg.data, raw=False)
-                    await msg.ack()
-
-                    if self._presence_callback:
-                        await invoke_callback(self._presence_callback, data)
-                except Exception as e:
-                    self._ctx.logger.error('Error processing presence message', e)
-        except Exception as e:
-            self._ctx.logger.error('Presence consumer loop ended', e)
-
     async def _presence_message_handler(self, msg):
         data = msgpack.unpackb(msg.data, raw=False)
         await msg.ack()
 
         if self._presence_callback:
             await invoke_callback(self._presence_callback, data)
+
+    async def _consume_presence(self, sub):
+        try:
+            async for msg in sub.messages:
+                try:
+                    await self._presence_message_handler(msg)
+                except Exception as e:
+                    self._ctx.logger.error('Error processing presence message', e)
+        except Exception as e:
+            self._ctx.logger.error('Presence consumer loop ended', e)
 
 
     # ─── Connection Callbacks ──────────────────────────────────

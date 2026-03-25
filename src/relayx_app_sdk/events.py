@@ -61,7 +61,7 @@ class EventManager:
             'sub_ref': sub,
         })
 
-        asyncio.create_task(self._consume(sub, name))
+        asyncio.create_task(self._consume(sub, msg_handler))
         return True
 
     async def off(self, params):
@@ -80,20 +80,15 @@ class EventManager:
             self._callbacks.pop(name, None)
             self._ctx.unregister_subscription(f'events:{name}')
 
-    async def _consume(self, sub, name):
+    async def _consume(self, sub, handler):
         try:
             async for msg in sub.messages:
                 try:
-                    data = msgpack.unpackb(msg.data, raw=False)
-                    await msg.ack()
-
-                    cb = self._callbacks.get(name)
-                    if cb:
-                        await invoke_callback(cb, data)
+                    await handler(msg)
                 except Exception as e:
-                    self._ctx.logger.error(f'Error processing event message for {name}', e)
+                    self._ctx.logger.error('Error processing event message', e)
         except Exception as e:
-            self._ctx.logger.error(f'Event consumer loop ended for {name}', e)
+            self._ctx.logger.error('Event consumer loop ended', e)
 
     async def delete_all_consumers(self):
         for name, sub in list(self._consumers.items()):

@@ -68,7 +68,7 @@ class TelemetryManager:
             'sub_ref': sub,
         })
 
-        asyncio.create_task(self._consume(sub, callback))
+        asyncio.create_task(self._consume(sub, msg_handler))
         return True
 
     async def off(self, params):
@@ -198,13 +198,11 @@ class TelemetryManager:
             valid_keys = ', '.join(device['schema'].keys())
             raise ValueError(f'metric "{metric}" is not a valid key in device schema. Valid keys: {valid_keys}')
 
-    async def _consume(self, sub, callback):
+    async def _consume(self, sub, handler):
         try:
             async for msg in sub.messages:
                 try:
-                    data = msgpack.unpackb(msg.data, raw=False)
-                    await msg.ack()
-                    await invoke_callback(callback, data)
+                    await handler(msg)
                 except Exception as e:
                     self._ctx.logger.error('Error processing telemetry message', e)
         except Exception as e:
