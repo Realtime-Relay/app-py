@@ -14,54 +14,67 @@ Covers: app.telemetry.stream, app.telemetry.off,
 """
 @method telemetry.stream
 @description Subscribes to a real-time telemetry stream for a specific
-             device and metric via JetStream consumer.
+             device via a wildcard JetStream consumer. Supports subscribing
+             to all metrics or a specific set with client-side filtering.
+             Multiple independent subscriptions per device are allowed.
 
 @param params: dict
-    - device_ident: str      — Required. Device identifier. [a-zA-Z0-9_-]+
-    - metric: str            — Required. Metric name or "*" for all. Validated by validate_telemetry_metric(). [a-zA-Z0-9_-] or "*"
-    - callback: Callable | AsyncCallable — Required. Called with each telemetry data point.
-                                Supports both sync and async callbacks.
+    - device_ident: str                     — Required. Device identifier. [a-zA-Z0-9_-]+
+    - metric: str | list[str]               — Required.
+                                               "*" (str) — subscribe to all metrics.
+                                               list[str] — specific metric names to filter on.
+                                               Non-"*" strings are rejected.
+    - callback: Callable | AsyncCallable    — Required. Called with each telemetry data point.
+                                               Supports both sync and async callbacks.
 
 @raises ValueError — If device_ident is missing/empty or fails validation
-@raises ValueError — If metric is missing/empty or contains invalid characters (via validate_telemetry_metric)
-@raises ValueError — If metric is not "*" and not a key in device.schema
+@raises ValueError — If metric is a non-"*" string
+@raises ValueError — If metric is not a string or list
+@raises ValueError — If metric is an empty list
+@raises ValueError — If any metric in list is not a key in device.schema
 @raises ValueError — If callback is not callable
 @raises RuntimeError — If not connected
 
-@nats_subject {org_id}.{env}.telemetry.<device_id>.<metric>
+@nats_subject {org_id}.{env}.telemetry.<device_id>.*
 @nats_type jetstream_consumer
 @encoding msgpack (decode on receive)
 
 @callback_payload
 {
-    "metric": str,        # Metric name (e.g., "temperature")
-    "value": Any,         # Metric value
-    "timestamp": int      # Unix timestamp (ms)
+    "metric": str,        # Metric name extracted from last token of NATS subject
+    "data": Any           # Raw msgpack-decoded payload from the message
 }
 
 @metric_validation
-- Only two forms of metric are allowed:
-  1. "*" — subscribe to all metrics for the device
-  2. A specific metric name that MUST be a key in device.schema
-- If metric is not "*" and is not found in device.schema, raise ValueError
+- metric accepts two forms:
+  1. "*" (str) — subscribe to all metrics, no client-side filter
+  2. list[str] — each entry MUST be a key in device.schema
+- Non-"*" strings raise: 'metric as a string must be "*". Use a list for specific metrics.'
+- Invalid schema keys raise: 'metric "<name>" is not a valid key in device schema'
+
+@consumer_tracking
+- Internal dict: {device_ident: list of {sub, metrics: set|None, callback}}
+- Each stream() call creates a new independent subscription (no dedup)
+- metrics is None for "*" (all metrics), set for specific metrics
+- Multiple subscriptions for the same device are allowed with different callbacks/metrics
 
 @behavior
-- Validates metric against device.schema (fetched via device.get())
+- If metric is list: validates each metric against device.schema
 - Resolves device_ident -> device_id via device cache
-- Creates a JetStream consumer for the specific device_id + metric subject
-- Decodes msgpack payload on each message, invokes callback
-- One consumer per device_ident + metric combination
-- If already subscribed to same device_ident + metric, return False
+- Always creates a wildcard JetStream consumer: {org_id}.{env}.telemetry.{device_id}.*
+- Client-side filtering: if metrics is a set, only invokes callback when the
+  extracted metric name is in the set. If metrics is None ("*"), all messages pass.
 - Consumer name format: apppy_telemetry_{device_ident}_{uuid}
 - Registers subscription in ctx._subscription_registry for reconnect resubscription
 
-@returns bool — True if subscription created, False if already exists
+@returns None
 
 @example
+    # Subscribe to specific metrics
     await app.telemetry.stream({
         "device_ident": "sensor_01",
-        "metric": "temperature",
-        "callback": lambda data: print(f"{data['metric']}: {data['value']}")
+        "metric": ["temperature", "humidity"],
+        "callback": lambda data: print(f"{data['metric']}: {data['data']}")
     })
 
     # Subscribe to all metrics
@@ -69,6 +82,18 @@ Covers: app.telemetry.stream, app.telemetry.off,
         "device_ident": "sensor_01",
         "metric": "*",
         "callback": lambda data: print(data)
+    })
+
+    # Multiple independent subscriptions for same device
+    await app.telemetry.stream({
+        "device_ident": "sensor_01",
+        "metric": ["temperature"],
+        "callback": temp_handler
+    })
+    await app.telemetry.stream({
+        "device_ident": "sensor_01",
+        "metric": ["humidity"],
+        "callback": humidity_handler
     })
 """
 
@@ -79,32 +104,38 @@ Covers: app.telemetry.stream, app.telemetry.off,
 """
 @method telemetry.off
 @description Unsubscribes from telemetry streams for a device.
-             Can target all metrics or specific ones.
+             Can target all subscriptions or remove specific metrics from
+             filtered subscriptions.
 
 @param params: dict
     - device_ident: str       — Required. Device identifier.
     - metric: list[str]       — Optional. List of metric names to unsubscribe.
-                                 If omitted, unsubscribes ALL metrics for the device.
+                                 If omitted, unsubscribes ALL subscriptions for the device.
 
 @raises ValueError — If device_ident is missing/empty or fails validation
 @raises ValueError — If metric is provided but not a list
 
 @behavior
 - If metric is omitted: delete ALL JetStream consumers for device_ident
-- If metric is provided: delete consumer for each specific metric
-- Removes consumer from internal tracking map
+  (all subscriptions including "*" subscriptions), remove dict entry.
+- If metric is provided: iterate all subscriptions for the device.
+  - Wildcard subscriptions (metrics = None, i.e. "*") are SKIPPED — unaffected.
+  - For filtered subscriptions: remove each specified metric from the set.
+  - If a subscription's metric set becomes empty, delete its consumer.
+  - If all subscriptions are removed, clean up the dict entry.
+- No-op if device has no active subscriptions.
 - Unregisters from ctx._subscription_registry
 
 @returns None
 
 @example
-    # Unsubscribe from all metrics for a device
+    # Unsubscribe all subscriptions for a device (including "*" subscriptions)
     await app.telemetry.off({"device_ident": "sensor_01"})
 
-    # Unsubscribe from specific metrics only
+    # Remove specific metrics from filtered subscriptions (leaves "*" subscriptions intact)
     await app.telemetry.off({
         "device_ident": "sensor_01",
-        "metric": ["temperature", "humidity"]
+        "metric": ["temperature"]
     })
 """
 
@@ -131,18 +162,39 @@ Covers: app.telemetry.stream, app.telemetry.off,
 
 @nats_subject api.iot.db.{org_id}.telemetry.history
 @nats_type request
-@encoding JSON
+@encoding JSON (request) / msgpack (response)
 
 @request_payload
 {
     "device_id": str,      # Resolved from device_ident
     "env": str,
-    "start": str,          # ISO8601
+    "start": str,          # ISO8601 (cursor on subsequent pages)
     "end": str,            # ISO8601
-    "fields": list[str]
+    "fields": list[str],
+    "last_value": False     # Always False for history()
 }
 
-@returns dict — Telemetry history data
+@response_payload (msgpack decoded)
+# Success (paginated):
+{
+    "status": "TELEMETRY_FETCH_SUCCESS",
+    "data": {
+        "has_more": bool,                   # True if more pages exist
+        "cursor": str,                      # ISO8601 cursor for next page (if has_more)
+        "data": {"<metric>": list}          # Telemetry records per metric for this page
+    }
+}
+
+@pagination
+- Uses a while True loop with cursor-based pagination
+- First request uses params.start as the start cursor
+- If response has has_more=True, sets start_cursor = data.cursor and loops
+- If response has has_more=False or status is not SUCCESS, breaks
+- Accumulates records across pages per metric
+- Pre-initializes telemetry dict with empty lists for all requested fields
+- Request timeout: 20s
+
+@returns dict — Object keyed by metric name -> list of records
 
 @example
     history = await app.telemetry.history({
@@ -159,36 +211,53 @@ Covers: app.telemetry.stream, app.telemetry.off,
 
 """
 @method telemetry.latest
-@description Convenience method that fetches telemetry history for
-             the last 24 hours (now - 1 day -> now).
+@description Fetches the latest (most recent) telemetry value for each
+             requested field within a caller-specified time range.
 
 @param params: dict
     - device_ident: str     — Required. Device identifier. [a-zA-Z0-9_-]+
     - fields: list[str]     — Required. List of metric field names.
+    - start: str            — Required. ISO8601 datetime string.
+    - end: str              — Required. ISO8601 datetime string.
 
 @raises ValueError — If device_ident is missing/empty
 @raises ValueError — If fields is not a non-empty list
 @raises ValueError — If any field is not a key in device.schema
+@raises ValueError — If start or end is not a valid ISO8601 string
+@raises ValueError — If start >= end
 @raises RuntimeError — If not connected
 
 @nats_subject api.iot.db.{org_id}.telemetry.history
 @nats_type request
-@encoding JSON
+@encoding JSON (request) / msgpack (response)
 
 @request_payload
 {
     "device_id": str,
     "env": str,
-    "start": str,          # now() - 24 hours, ISO8601
-    "end": str,            # now(), ISO8601
-    "fields": list[str]
+    "start": str,          # ISO8601 (caller-provided)
+    "end": str,            # ISO8601 (caller-provided)
+    "fields": list[str],
+    "last_value": True      # Always True for latest()
 }
 
-@returns dict — Telemetry history data for last 24 hours
+@behavior
+- Validates start < end before making request
+- Resolves device_ident -> device_id via device cache
+- Sends a single request (no pagination) with last_value: True
+- On TELEMETRY_FETCH_SUCCESS: extracts first element of each metric array
+  -> returns {"<metric>": <single_record>} (flat dict)
+- On non-success status: returns empty dict {}
+- Request timeout: 20s
+
+@returns dict — Object keyed by metric name -> single latest record
 
 @example
     latest = await app.telemetry.latest({
         "device_ident": "sensor_01",
-        "fields": ["temperature", "humidity"]
+        "fields": ["temperature", "humidity"],
+        "start": "2026-03-27T00:00:00.000Z",
+        "end": "2026-03-28T00:00:00.000Z"
     })
+    # latest == {"temperature": {"value": 25.3, "time": "..."}, "humidity": {"value": 60, "time": "..."}}
 """

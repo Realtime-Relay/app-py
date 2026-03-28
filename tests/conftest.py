@@ -7,6 +7,7 @@ Context object that every manager test can import.
 
 import asyncio
 import json
+import msgpack
 import pytest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
@@ -30,6 +31,11 @@ class MockMsg:
 def make_nats_response(payload_dict):
     """Build a MockMsg whose .data is JSON-encoded bytes."""
     return MockMsg(json.dumps(payload_dict).encode())
+
+
+def make_msgpack_response(payload_dict, subject='test.subject'):
+    """Build a MockMsg whose .data is msgpack-encoded bytes."""
+    return MockMsg(msgpack.packb(payload_dict), subject=subject)
 
 
 # ---------------------------------------------------------------------------
@@ -75,17 +81,54 @@ def mock_jetstream():
     return js
 
 
+class MockKVEntry:
+    """Simulates a NATS KV entry with .value and .revision."""
+
+    def __init__(self, value, revision=1):
+        self.value = value
+        self.revision = revision
+
+
+class MockKVBucket:
+    """Simulates a NATS KV bucket backed by an in-memory dict."""
+
+    def __init__(self):
+        self._store = {}
+        self._revision = 0
+
+    async def get(self, key):
+        if key not in self._store:
+            raise KeyError(f'key not found: {key}')
+        return MockKVEntry(self._store[key], self._revision)
+
+    async def put(self, key, value):
+        self._revision += 1
+        self._store[key] = value
+        return self._revision
+
+    async def update(self, key, value, revision):
+        self._revision += 1
+        self._store[key] = value
+        return self._revision
+
+    async def create(self, key, value):
+        if key in self._store:
+            raise KeyError(f'key already exists: {key}')
+        self._revision += 1
+        self._store[key] = value
+        return self._revision
+
+    async def delete(self, key):
+        self._store.pop(key, None)
+
+    async def purge(self, key):
+        self._store.pop(key, None)
+
+
 @pytest.fixture
 def mock_kv_bucket():
-    """A mock KV bucket with .get(), .put(), .create(), .delete()."""
-
-    kv = AsyncMock()
-    kv.get = AsyncMock()
-    kv.put = AsyncMock()
-    kv.create = AsyncMock()
-    kv.delete = AsyncMock()
-
-    return kv
+    """A mock KV bucket backed by an in-memory dict."""
+    return MockKVBucket()
 
 
 @pytest.fixture

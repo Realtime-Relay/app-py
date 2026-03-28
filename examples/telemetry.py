@@ -41,27 +41,41 @@ async def main():
 
     # ── Stream live telemetry ─────────────────────────────────
 
-    # def on_temp(data):
-    #     print(f'  [temp] {data}')
+    # Subscribe to specific metrics
+    # def on_telemetry(data):
+    #     print(f'  [{data["metric"]}] {data["data"]}')
 
     # await app.telemetry.stream({
     #     'device_ident': 's-3',
-    #     'metric': '*',
-    #     'callback': on_temp,
+    #     'metric': ['temperature', 'humidity'],
+    #     'callback': on_telemetry,
     # })
 
-    # print('Streaming temp from s-3 for 15 seconds...')
+    # print('Streaming temperature & humidity from s-3 for 15 seconds...')
     # await asyncio.sleep(15)
+
+    # Subscribe to all metrics
+    # await app.telemetry.stream({
+    #     'device_ident': 's-3',
+    #     'metric': '*',
+    #     'callback': on_telemetry,
+    # })
 
 
     # ── Stop streaming ────────────────────────────────────────
 
+    # Remove specific metrics from filtered subscriptions (leaves "*" intact)
     # await app.telemetry.off({
     #     'device_ident': 's-3',
     #     'metric': ['temperature'],
     # })
 
-    # print('Stopped streaming temp.\n')
+    # Remove all subscriptions for a device
+    # await app.telemetry.off({
+    #     'device_ident': 's-3',
+    # })
+
+    # print('Stopped streaming.\n')
 
 
     # ── Query telemetry history ───────────────────────────────

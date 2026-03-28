@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from .utils import invoke_callback
 from .validation import (
-    validate_ident, validate_telemetry_metric, validate_callable,
+    validate_ident, validate_callable,
     validate_connected, validate_list, validate_non_empty_list,
     validate_iso8601, validate_start_before_end,
 )
@@ -17,28 +17,32 @@ class TelemetryManager:
 
     def __init__(self, ctx):
         self._ctx = ctx
-        self._consumers = {}  # key: "{device_ident}:{metric}" -> sub
+        self._consumers = {}  # key: device_ident -> list of {sub, metrics: set|None, callback}
 
     async def stream(self, params):
         validate_connected(self._ctx.connected)
         validate_ident(params.get('device_ident'), 'device_ident')
+        validate_callable(params.get('callback'), 'callback')
 
         metric = params.get('metric')
-        validate_telemetry_metric(metric)
+        metrics_filter = None
 
-        validate_callable(params.get('callback'), 'callback')
-        await self._validate_metric(params['device_ident'], metric)
+        if isinstance(metric, str):
+            if metric != '*':
+                raise ValueError('metric as a string must be "*". Use a list for specific metrics.')
+        elif isinstance(metric, list):
+            validate_non_empty_list(metric, 'metric')
+            for m in metric:
+                await self._validate_metric(params['device_ident'], m)
+            metrics_filter = set(metric)
+        else:
+            raise ValueError('metric must be "*" or a non-empty list of metric names')
 
-        key = f"{params['device_ident']}:{metric}"
-
-        if key in self._consumers:
-            return False
-
-        # Build NATS subject
-        device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
-        subject = f'{self._ctx.org_id}.{self._ctx.env}.telemetry.{device_id}.{metric}'
+        device_ident = params['device_ident']
+        device_id = await self._ctx.device.resolve_device_id(device_ident)
+        subject = f'{self._ctx.org_id}.{self._ctx.env}.telemetry.{device_id}.*'
         stream = f'{self._ctx.org_id}_stream'
-        consumer_name_prefix = f"apppy_telemetry_{params['device_ident']}"
+        consumer_name_prefix = f"apppy_telemetry_{device_ident}"
 
         sub = await self._ctx.jetstream.subscribe(
             subject,
@@ -51,7 +55,12 @@ class TelemetryManager:
             ),
         )
 
-        self._consumers[key] = sub
+        entry = {'sub': sub, 'metrics': metrics_filter, 'callback': params['callback']}
+
+        if device_ident not in self._consumers:
+            self._consumers[device_ident] = []
+        self._consumers[device_ident].append(entry)
+
         callback = params['callback']
 
         async def msg_handler(msg):
@@ -61,13 +70,19 @@ class TelemetryManager:
             tokens = msg.subject.split('.')
             metric_name = tokens[-1]
 
+            if entry['metrics'] is not None and metric_name not in entry['metrics']:
+                return
+
             await invoke_callback(callback, {
                 'metric': metric_name,
                 'data': data,
             })
 
+        sub_key = f'telemetry:{device_ident}:{uuid.uuid4()}'
+        entry['sub_key'] = sub_key
+
         self._ctx.register_subscription({
-            'key': f'telemetry:{key}',
+            'key': sub_key,
             'type': 'jetstream',
             'subject': subject,
             'stream': stream,
@@ -77,44 +92,51 @@ class TelemetryManager:
         })
 
         asyncio.create_task(self._consume(sub, msg_handler))
-        return True
 
     async def off(self, params):
         validate_ident(params.get('device_ident'), 'device_ident')
+
+        device_ident = params['device_ident']
+        subs = self._consumers.get(device_ident)
+        if not subs:
+            return
 
         metric = params.get('metric')
 
         if metric is not None:
             validate_list(metric, 'metric')
 
-            for m in metric:
-                key = f"{params['device_ident']}:{m}"
-                sub = self._consumers.get(key)
+            for i in range(len(subs) - 1, -1, -1):
+                entry = subs[i]
 
-                if sub:
+                # Skip wildcard ("*") subscriptions — metrics is None
+                if entry['metrics'] is None:
+                    continue
+
+                for m in metric:
+                    entry['metrics'].discard(m)
+
+                if len(entry['metrics']) == 0:
                     try:
-                        await sub.unsubscribe()
+                        await entry['sub'].unsubscribe()
                     except Exception as e:
-                        self._ctx.logger.error(f'Failed to unsubscribe telemetry {key}', e)
+                        self._ctx.logger.error(f'Failed to unsubscribe telemetry', e)
 
-                    del self._consumers[key]
-                    self._ctx.unregister_subscription(f'telemetry:{key}')
+                    self._ctx.unregister_subscription(entry.get('sub_key', ''))
+                    subs.pop(i)
+
+            if len(subs) == 0:
+                del self._consumers[device_ident]
         else:
-            keys_to_remove = [
-                k for k in self._consumers
-                if k.startswith(f"{params['device_ident']}:")
-            ]
-
-            for key in keys_to_remove:
-                sub = self._consumers[key]
-
+            for entry in subs:
                 try:
-                    await sub.unsubscribe()
+                    await entry['sub'].unsubscribe()
                 except Exception as e:
-                    self._ctx.logger.error(f'Failed to unsubscribe telemetry {key}', e)
+                    self._ctx.logger.error(f'Failed to unsubscribe telemetry', e)
 
-                del self._consumers[key]
-                self._ctx.unregister_subscription(f'telemetry:{key}')
+                self._ctx.unregister_subscription(entry.get('sub_key', ''))
+
+            del self._consumers[device_ident]
 
 
     async def history(self, params):
@@ -274,11 +296,12 @@ class TelemetryManager:
             self._ctx.logger.error('Telemetry consumer loop ended', e)
 
     async def delete_all_consumers(self):
-        for key, sub in list(self._consumers.items()):
-            try:
-                await sub.unsubscribe()
-            except Exception as e:
-                self._ctx.logger.error(f'Failed to unsubscribe telemetry {key}', e)
-            self._ctx.unregister_subscription(f'telemetry:{key}')
+        for device_ident, subs in list(self._consumers.items()):
+            for entry in subs:
+                try:
+                    await entry['sub'].unsubscribe()
+                except Exception as e:
+                    self._ctx.logger.error(f'Failed to unsubscribe telemetry', e)
+                self._ctx.unregister_subscription(entry.get('sub_key', ''))
 
         self._consumers.clear()

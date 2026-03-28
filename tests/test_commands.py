@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from relayx_app_sdk.commands import CommandManager
-from tests.conftest import make_nats_response
+from tests.conftest import make_nats_response, make_msgpack_response
 
 
 # ──────────────────────────────────────────────────────────────
@@ -114,9 +114,14 @@ class TestCommandHistory:
     @pytest.mark.asyncio
     async def test_returns_history(self, command, ctx):
         ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({
+            return_value=make_msgpack_response({
+                'status': 'COMMAND_FETCH_SUCCESS',
                 'data': {
-                    'dev-id-1': [{'value': 'ok', 'timestamp': 123}],
+                    'has_more': False,
+                    'cursor': None,
+                    'data': {
+                        'dev-id-1': [{'value': 'ok', 'timestamp': 123}],
+                    },
                 },
             })
         )
