@@ -41,27 +41,27 @@ async def main():
 
     # ── Stream live telemetry ─────────────────────────────────
 
-    def on_temp(data):
-        print(f'  [temp] {data}')
+    # def on_temp(data):
+    #     print(f'  [temp] {data}')
 
-    await app.telemetry.stream({
-        'device_ident': 's-3',
-        'metric': '*',
-        'callback': on_temp,
-    })
+    # await app.telemetry.stream({
+    #     'device_ident': 's-3',
+    #     'metric': '*',
+    #     'callback': on_temp,
+    # })
 
-    print('Streaming temp from s-3 for 15 seconds...')
-    await asyncio.sleep(15)
+    # print('Streaming temp from s-3 for 15 seconds...')
+    # await asyncio.sleep(15)
 
 
     # ── Stop streaming ────────────────────────────────────────
 
-    await app.telemetry.off({
-        'device_ident': 's-3',
-        'metric': ['temperature'],
-    })
+    # await app.telemetry.off({
+    #     'device_ident': 's-3',
+    #     'metric': ['temperature'],
+    # })
 
-    print('Stopped streaming temp.\n')
+    # print('Stopped streaming temp.\n')
 
 
     # ── Query telemetry history ───────────────────────────────
@@ -83,6 +83,8 @@ async def main():
     latest = await app.telemetry.latest({
         'device_ident': 's-3',
         'fields': ['temperature'],
+        'start': '2025-01-01T00:00:00.000Z',
+        'end': '2026-12-31T23:59:59.000Z',
     })
 
     print('Latest telemetry:')

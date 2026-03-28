@@ -93,13 +93,19 @@ class CommandManager:
             'end': end,
         }).encode("utf-8")
 
-        res = await self._ctx.nats_client.request(
-            f'api.iot.db.{self._ctx.org_id}.command.history',
-            data,
-            timeout=20,
-        )
+        res = None
 
-        decoded = json.loads(res.data.decode())
+        try:
+            res = await self._ctx.nats_client.request(
+                f'api.iot.db.{self._ctx.org_id}.command.history',
+                data,
+                timeout=20,
+            )
+        except Exception as e:
+            print(e)
+            raise ValueError("Command history request timed-out")
+
+        decoded = msgpack.unpackb(res.data, raw=False)
 
         # Map device IDs back to idents
         result = {}

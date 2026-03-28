@@ -3,6 +3,7 @@ import json
 import uuid
 import msgpack
 import nats.js.api
+from datetime import datetime, timedelta, timezone
 
 from .utils import invoke_callback
 from .validation import (
@@ -115,11 +116,14 @@ class TelemetryManager:
                 del self._consumers[key]
                 self._ctx.unregister_subscription(f'telemetry:{key}')
 
+
     async def history(self, params):
         validate_connected(self._ctx.connected)
         validate_ident(params.get('device_ident'), 'device_ident')
         validate_non_empty_list(params.get('fields'), 'fields')
+        
         await self._validate_fields(params['device_ident'], params['fields'])
+        
         validate_iso8601(params.get('start'), 'start')
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
@@ -132,15 +136,26 @@ class TelemetryManager:
             'start': params['start'],
             'end': params['end'],
             'fields': params['fields'],
+            'last_value': False
         }).encode()
 
-        res = await self._ctx.nats_client.request(
-            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
-            data,
-            timeout=20,
-        )
+        res = None
 
-        return json.loads(res.data.decode())
+        try:
+            res = await self._ctx.nats_client.request(
+                f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+                data,
+                timeout=20,
+            )
+
+            res = msgpack.unpackb(res.data, raw=False)
+        except Exception as e:
+            raise ValueError("Telemetry history request timed-out")
+
+        data = res["data"] if res["status"] == "TELEMETRY_FETCH_SUCCESS" else []
+
+        return data
+
 
     async def latest(self, params):
         validate_connected(self._ctx.connected)
@@ -148,28 +163,44 @@ class TelemetryManager:
         validate_non_empty_list(params.get('fields'), 'fields')
         await self._validate_fields(params['device_ident'], params['fields'])
 
-        from datetime import datetime, timedelta, timezone
-
-        now = datetime.now(timezone.utc)
-        one_day_ago = now - timedelta(days=1)
+        validate_iso8601(params.get('start'), 'start')
+        validate_iso8601(params.get('end'), 'end')
+        validate_start_before_end(params['start'], params['end'])
 
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
         data = json.dumps({
             'device_id': device_id,
             'env': self._ctx.env,
-            'start': one_day_ago.strftime('%Y-%m-%dT%H:%M:%S.') + f'{one_day_ago.microsecond // 1000:03d}Z',
-            'end': now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z',
+            'start': params['start'],
+            'end': params['end'],
             'fields': params['fields'],
+            'last_value': True
         }).encode()
 
-        res = await self._ctx.nats_client.request(
-            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
-            data,
-            timeout=20,
-        )
+        res = None
 
-        return json.loads(res.data.decode())
+        try:
+            res = await self._ctx.nats_client.request(
+                f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+                data,
+                timeout=20,
+            )
+
+            res = msgpack.unpackb(res.data, raw=False)
+        except Exception as e:
+            print(e)
+            raise ValueError("Telemetry history request timed-out")
+
+        data = {}
+
+        if res["status"] == "TELEMETRY_FETCH_SUCCESS":
+            data = res["data"]
+
+            for metric in data.keys():
+                data[metric] = data[metric][0]
+
+        return data
 
 
     # ─── Internal Helpers ──────────────────────────────────────
