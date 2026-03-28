@@ -68,7 +68,7 @@ async def main():
 
     history = await app.telemetry.history({
         'device_ident': 's-3',
-        'fields': ['temperature'],
+        'fields': ['temperature', 'humidity'],
         'start': '2025-01-01T00:00:00.000Z',
         'end': '2026-12-31T23:59:59.000Z',
     })
@@ -77,12 +77,15 @@ async def main():
     print(json.dumps(history, indent=4))
     print()
 
+    print(f"Temperature => {len(history["temperature"])}")
+    print(f"Humidity => {len(history["humidity"])}")
+    print()
 
     # ── Fetch latest values ───────────────────────────────────
 
     latest = await app.telemetry.latest({
         'device_ident': 's-3',
-        'fields': ['temperature'],
+        'fields': ['temperature', 'humidity'],
         'start': '2025-01-01T00:00:00.000Z',
         'end': '2026-12-31T23:59:59.000Z',
     })

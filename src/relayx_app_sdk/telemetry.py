@@ -130,31 +130,56 @@ class TelemetryManager:
 
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
-        data = json.dumps({
-            'device_id': device_id,
-            'env': self._ctx.env,
-            'start': params['start'],
-            'end': params['end'],
-            'fields': params['fields'],
-            'last_value': False
-        }).encode()
+        telemetry = {}
 
-        res = None
+        start_cursor = params['start']
 
-        try:
-            res = await self._ctx.nats_client.request(
-                f'api.iot.db.{self._ctx.org_id}.telemetry.history',
-                data,
-                timeout=20,
-            )
+        for field in params['fields']:
+            telemetry[field] = []
 
-            res = msgpack.unpackb(res.data, raw=False)
-        except Exception as e:
-            raise ValueError("Telemetry history request timed-out")
+        while True:
+            try:
+                data = json.dumps({
+                    'device_id': device_id,
+                    'env': self._ctx.env,
+                    'start': start_cursor,
+                    'end': params['end'],
+                    'fields': params['fields'],
+                    'last_value': False
+                }).encode()
 
-        data = res["data"] if res["status"] == "TELEMETRY_FETCH_SUCCESS" else []
+                res = await self._ctx.nats_client.request(
+                    f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+                    data,
+                    timeout=20,
+                )
 
-        return data
+                res = msgpack.unpackb(res.data, raw=False)
+
+                if res["status"] == "TELEMETRY_FETCH_SUCCESS":
+                    tlmData = res["data"]["data"]
+
+                    has_more = res["data"]["has_more"]
+
+                    for metric in tlmData.keys():
+                        telemetry[metric] = telemetry[metric] + tlmData[metric]
+
+                    if(has_more):
+                        start_cursor = res["data"]["cursor"]
+                        continue
+                    else:
+                        # We got all the data, we're done
+                        break
+                else:
+                    # We weren't able to fetch tlm
+
+                    break
+
+            except Exception as e:
+                print(e)
+                raise ValueError("Telemetry history request timed-out")
+
+        return telemetry
 
 
     async def latest(self, params):
@@ -169,18 +194,22 @@ class TelemetryManager:
 
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
-        data = json.dumps({
-            'device_id': device_id,
-            'env': self._ctx.env,
-            'start': params['start'],
-            'end': params['end'],
-            'fields': params['fields'],
-            'last_value': True
-        }).encode()
-
         res = None
+        telemetry = {}
 
+        for field in params['fields']:
+            telemetry[field] = {}
+        
         try:
+            data = json.dumps({
+                'device_id': device_id,
+                'env': self._ctx.env,
+                'start': params['start'],
+                'end': params['end'],
+                'fields': params['fields'],
+                'last_value': True
+            }).encode()
+
             res = await self._ctx.nats_client.request(
                 f'api.iot.db.{self._ctx.org_id}.telemetry.history',
                 data,
@@ -191,16 +220,14 @@ class TelemetryManager:
         except Exception as e:
             print(e)
             raise ValueError("Telemetry history request timed-out")
-
-        data = {}
-
+        
         if res["status"] == "TELEMETRY_FETCH_SUCCESS":
-            data = res["data"]
+            tlmData = res["data"]["data"]
 
-            for metric in data.keys():
-                data[metric] = data[metric][0]
+            for metric in tlmData.keys():
+                telemetry[metric] = tlmData[metric][0]
 
-        return data
+        return telemetry
 
 
     # ─── Internal Helpers ──────────────────────────────────────
