@@ -70,11 +70,17 @@ class CommandManager:
         device_ids = []
         unfound = []
 
+        command_history = {}
+
+        start_cursor = params['start']
+
         for ident in params['device_idents']:
             try:
                 device_id = await self._ctx.device.resolve_device_id(ident)
                 device_ids.append(device_id)
                 id_to_ident[device_id] = ident
+
+                command_history[ident] = []
             except (ValueError, Exception):
                 unfound.append(ident)
 
@@ -85,37 +91,46 @@ class CommandManager:
             return result
 
         # Fetch history
-        data = json.dumps({
-            'device_ids': device_ids,
-            'env': self._ctx.env,
-            'command_name': params['name'],
-            'start': params['start'],
-            'end': end,
-        }).encode("utf-8")
+        while True:
+            data = json.dumps({ 
+                'device_ids': device_ids,
+                'env': self._ctx.env,
+                'command_name': params['name'],
+                'start': start_cursor,
+                'end': end,
+            }).encode("utf-8")
 
-        res = None
+            res = None
 
-        try:
-            res = await self._ctx.nats_client.request(
-                f'api.iot.db.{self._ctx.org_id}.command.history',
-                data,
-                timeout=20,
-            )
-        except Exception as e:
-            print(e)
-            raise ValueError("Command history request timed-out")
+            try:
+                res = await self._ctx.nats_client.request(
+                    f'api.iot.db.{self._ctx.org_id}.command.history',
+                    data,
+                    timeout=20,
+                )
 
-        decoded = msgpack.unpackb(res.data, raw=False)
+                decoded = msgpack.unpackb(res.data, raw=False)
 
-        # Map device IDs back to idents
-        result = {}
+                if decoded["status"] == "COMMAND_FETCH_SUCCESS":
+                    command_data = decoded["data"]
 
-        if decoded.get('data') and isinstance(decoded['data'], dict):
-            for device_id, records in decoded['data'].items():
-                ident = id_to_ident.get(device_id, device_id)
-                result[ident] = records
+                    has_more = command_data["has_more"]
 
-        for ident in unfound:
-            result[ident] = {'error': 'Device not found'}
+                    for device_id, records in command_data['data'].items():
+                        ident = id_to_ident.get(device_id, device_id)
+                        command_history[ident] = command_history[ident] + records
 
-        return result
+                    if has_more:
+                        start_cursor = command_data["cursor"]
+
+                        continue
+                    else:
+                        break
+                else:
+                    break
+
+            except Exception as e:
+                print(e)
+                raise ValueError("Command history request timed-out")
+
+        return command_history

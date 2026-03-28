@@ -42,36 +42,36 @@ async def main():
 
     # ── Send a command to one device ──────────────────────────
 
-    result = await app.command.send({
-        'name': 'setConfig',
-        'device_ident': ['s-3'],
-        'data': {
-            'reason': 'firmware update',
-            'delay_seconds': 5,
-        },
-    })
+    # result = await app.command.send({
+    #     'name': 'setConfig',
+    #     'device_ident': ['s-3'],
+    #     'data': {
+    #         'reason': 'firmware update',
+    #         'delay_seconds': 5,
+    #     },
+    # })
 
-    print('Send to one device:')
-    for ident, status in result.items():
-        print(f'  {ident}: {status}')
-    print()
+    # print('Send to one device:')
+    # for ident, status in result.items():
+    #     print(f'  {ident}: {status}')
+    # print()
 
 
-    # ── Send a command to multiple devices ────────────────────
+    # # ── Send a command to multiple devices ────────────────────
 
-    result = await app.command.send({
-        'name': 'setConfig',
-        'device_ident': ['sensor-1', 'sensor-2', 'sensor-3'],
-        'data': {
-            'reporting_interval': 30,
-            'mode': 'low-power',
-        },
-    })
+    # result = await app.command.send({
+    #     'name': 'setConfig',
+    #     'device_ident': ['sensor-1', 'sensor-2', 'sensor-3'],
+    #     'data': {
+    #         'reporting_interval': 30,
+    #         'mode': 'low-power',
+    #     },
+    # })
 
-    print('Send to multiple devices:')
-    for ident, status in result.items():
-        print(f'  {ident}: {status}')
-    print()
+    # print('Send to multiple devices:')
+    # for ident, status in result.items():
+    #     print(f'  {ident}: {status}')
+    # print()
 
 
     # ── Query command history ─────────────────────────────────
@@ -88,7 +88,7 @@ async def main():
             print(f'  {ident}: {records["error"]}')
         elif isinstance(records, list):
             print(f'  {ident}: {len(records)} record(s)')
-            for rec in records[:3]:
+            for rec in records:
                 print(f'    {rec}')
         else:
             print(f'  {ident}: {records}')
