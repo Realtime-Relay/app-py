@@ -1,11 +1,13 @@
 # RelayX App SDK for Python
 
-Official Python SDK for building applications on the RelayX Network.
+Official Python SDK for building applications on the RelayX platform.
+
+> **[View Full Documentation →](https://docs.relay-x.io/app-sdk/overview)**
 
 ## Installation
 
 ```bash
-pip install relayx-app-py
+pip install relayx_app_sdk
 ```
 
 ## Quick Start
