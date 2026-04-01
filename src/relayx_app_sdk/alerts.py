@@ -16,7 +16,8 @@ from .ephemeral_alerting import EphemeralEngine
 
 VALID_SOURCES = ['TELEMETRY', 'COMMAND', 'EVENT']
 VALID_RULE_TYPES = ['DEVICE', 'RULE']
-VALID_RULE_STATES = ['fire', 'resolved', 'ack', 'ack_all']
+VALID_EVENT_STATES = ['fire', 'resolved']
+VALID_ACK_STATES = ['ack', 'ack_all']
 
 
 class Alert:
@@ -286,15 +287,13 @@ class AlertManager:
         if rule_type == 'RULE' and not params.get('rule_id'):
             raise ValueError('rule_id is required for rule_type RULE')
 
-        validate_non_empty_list(params.get('rule_states'), 'rule_states')
+        rule_states = params.get('rule_states')
+        if rule_states:
+            validate_non_empty_list(rule_states, 'rule_states')
 
-        invalid_states = [s for s in params['rule_states'] if s not in VALID_RULE_STATES]
-        if invalid_states:
-            raise ValueError(f"rule_states contains invalid values: {', '.join(invalid_states)}. Valid: {', '.join(VALID_RULE_STATES)}")
-
-        needs_rule_id = any(s in ('ack', 'ack_all') for s in params['rule_states'])
-        if needs_rule_id and not params.get('rule_id'):
-            raise ValueError('rule_id is required when rule_states includes ack or ack_all')
+            invalid_states = [s for s in rule_states if s not in VALID_EVENT_STATES]
+            if invalid_states:
+                raise ValueError(f"rule_states contains invalid values: {', '.join(invalid_states)}. Valid: {', '.join(VALID_EVENT_STATES)}")
 
         validate_iso8601(params.get('start'), 'start')
         validate_iso8601(params.get('end'), 'end')
@@ -303,7 +302,7 @@ class AlertManager:
         payload = {
             'rule_type': rule_type,
             'env': self._ctx.env,
-            'rule_states': params['rule_states'],
+            'rule_states': rule_states or ['fire', 'resolved'],
             'start': params['start'],
             'end': params['end'],
         }
@@ -323,7 +322,56 @@ class AlertManager:
         decoded = json.loads(res.data.decode())
 
         if decoded.get('status') == 'ALERT_FETCH_SUCCESS':
-            return decoded.get('data')
+            data = decoded.get('data', {})
+            return {
+                'has_more': data.get('has_more'),
+                'cursor': data.get('cursor'),
+                'data': data.get('data'),
+            }
+
+        return decoded
+
+    async def ack_history(self, params):
+        validate_connected(self._ctx.connected)
+
+        if not params.get('rule_id'):
+            raise ValueError('rule_id is required')
+
+        ack_states = params.get('ack_states')
+        if ack_states:
+            validate_non_empty_list(ack_states, 'ack_states')
+
+            invalid_states = [s for s in ack_states if s not in VALID_ACK_STATES]
+            if invalid_states:
+                raise ValueError(f"ack_states contains invalid values: {', '.join(invalid_states)}. Valid: {', '.join(VALID_ACK_STATES)}")
+
+        validate_iso8601(params.get('start'), 'start')
+        validate_iso8601(params.get('end'), 'end')
+        validate_start_before_end(params['start'], params['end'])
+
+        payload = {
+            'rule_id': params['rule_id'],
+            'env': self._ctx.env,
+            'ack_states': ack_states or ['ack', 'ack_all'],
+            'start': params['start'],
+            'end': params['end'],
+        }
+
+        res = await self._ctx.nats_client.request(
+            f'api.iot.db.{self._ctx.org_id}.alerts.ack_history',
+            json.dumps(payload).encode(),
+            timeout=20,
+        )
+
+        decoded = json.loads(res.data.decode())
+
+        if decoded.get('status') == 'ALERT_ACK_FETCH_SUCCESS':
+            data = decoded.get('data', {})
+            return {
+                'has_more': data.get('has_more'),
+                'cursor': data.get('cursor'),
+                'data': data.get('data'),
+            }
 
         return decoded
 
