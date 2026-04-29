@@ -53,17 +53,17 @@ async def main():
 
     # ── History by device ─────────────────────────────────────
 
-    print('Fetching alert history for device s-3 (fire + resolved)...\n')
+    print('Fetching alert history for device s-3 (fire + resolved + ack)...\n')
 
     device_history = await app.alert.history({
         'rule_type': 'DEVICE',
         'device_ident': 's-3',
-        'rule_states': ['fire', 'resolved'],
+        'rule_states': ['fire', 'resolved', 'ack'],
         'start': '2024-01-01T00:00:00.000Z',
         'end': '2026-12-31T23:59:59.000Z',
     })
 
-    print('Device history:')
+    print('Device history (events):')
     print(json.dumps(device_history, indent=4))
     print()
 
@@ -81,8 +81,20 @@ async def main():
             'end': '2026-12-31T23:59:59.000Z',
         })
 
-        print('Rule history:')
+        print('Rule history (events):')
         print(json.dumps(rule_history, indent=4))
+        print()
+
+        # Filter to ack events only
+        ack_only = await app.alert.history({
+            'rule_type': 'RULE',
+            'rule_id': rule_id,
+            'rule_states': ['ack'],
+            'start': '2024-01-01T00:00:00.000Z',
+            'end': '2026-12-31T23:59:59.000Z',
+        })
+        print('Ack-only events:')
+        print(json.dumps(ack_only, indent=4))
         print()
 
     else:

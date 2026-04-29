@@ -59,9 +59,9 @@ def resolve_ident_from_id(ctx, device_id):
     return None
 
 
-def build_alert_payload(rule, rolling_state, timestamp, device_id):
+def build_alert_payload(rule, rolling_state, timestamp, device_id, incident_id=None):
     """Build the alert payload dict for fire/resolved/ack events.
-    Matches JS buildAlertPayload exactly."""
+    Matches JS buildAlertPayload exactly (now with incident_id)."""
     return {
         'alert': {
             'id': get_rule_id(rule),
@@ -70,6 +70,7 @@ def build_alert_payload(rule, rolling_state, timestamp, device_id):
             'config': rule.get('config', {}),
         },
         'device_id': device_id,
+        'incident_id': incident_id,
         'rolling_state': dict(rolling_state),
         'timestamp': timestamp,
     }
@@ -106,6 +107,7 @@ def create_fresh_state():
         'acked_by': None,
         'acked_at': None,
         'ack_notes': None,
+        'incident_id': None,
     }
 
 

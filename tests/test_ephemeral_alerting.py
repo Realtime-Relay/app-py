@@ -163,6 +163,7 @@ class TestCreateFreshState:
         assert state['acked_by'] is None
         assert state['acked_at'] is None
         assert state['ack_notes'] is None
+        assert state['incident_id'] is None
 
 
 class TestDispatchNotifications:
@@ -271,7 +272,7 @@ class TestEphemeralEngine:
         await engine.listen()  # listener mode
 
         with pytest.raises(RuntimeError, match='only available in owner mode'):
-            await engine.ack('user')
+            await engine.ack('dev-1', 'user')
 
     @pytest.mark.asyncio
     async def test_double_listen_is_noop(self, ctx):
@@ -604,13 +605,16 @@ class TestEphemeralOwnerAck:
 
         assert owner._state['status'] == 'alerting'
 
-        # Now ack
-        result = await owner.ack('admin@test.com', 'looking into it')
+        # Now ack — new signature requires device_id first
+        result = await owner.ack('dev-id-1', 'admin@test.com', 'looking into it')
 
         assert result is True
         assert owner._state['status'] == 'acknowledged'
         assert owner._state['acked_by'] == 'admin@test.com'
         assert len(acked) == 1
+        # Audit event must carry device_id and incident_id
+        assert acked[0]['device_id'] == 'dev-id-1'
+        assert acked[0]['incident_id'] is not None
 
     @pytest.mark.asyncio
     async def test_ack_when_not_alerting_returns_false(self, ctx):
@@ -625,7 +629,7 @@ class TestEphemeralOwnerAck:
 
         owner = EphemeralOwner(ctx, rule, lambda s: True, {})
 
-        result = await owner.ack('admin')
+        result = await owner.ack('dev-1', 'admin')
 
         assert result is False
 
