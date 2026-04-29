@@ -360,17 +360,21 @@ class TestAlertGet:
 class TestAlertHistory:
 
     @pytest.mark.asyncio
-    async def test_device_history(self, alerts, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({
-                'status': 'ALERT_FETCH_SUCCESS',
-                'data': {
-                    'has_more': False,
-                    'cursor': None,
-                    'data': {'fire': [{'event': 'fire'}], 'resolved': []},
-                },
-            })
-        )
+    async def test_device_history(self, alerts, ctx, monkeypatch):
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            return {
+                'status': 'ALERT_FETCH_STREAM_STARTED',
+                'frames': [
+                    {'last': True, 'data': {
+                        'fire': {'value': 1, 'timestamp': 100, 'incident_id': 'i-1'},
+                    }},
+                ],
+                'error': False,
+                'error_message': None,
+            }
+
+        import relayx_app_sdk.alerts as alerts_module
+        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
 
         result = await alerts.history({
             'rule_type': 'DEVICE',
@@ -380,17 +384,20 @@ class TestAlertHistory:
             'end': '2024-01-02T00:00:00Z',
         })
 
-        assert result['has_more'] is False
-        assert result['data']['fire'] == [{'event': 'fire'}]
+        assert result['events'] == [
+            {'state': 'fire', 'value': 1, 'timestamp': 100, 'incident_id': 'i-1'},
+        ]
 
     @pytest.mark.asyncio
-    async def test_defaults_rule_states(self, alerts, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({
-                'status': 'ALERT_FETCH_SUCCESS',
-                'data': {'has_more': False, 'cursor': None, 'data': {}},
-            })
-        )
+    async def test_defaults_rule_states(self, alerts, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            captured['payload'] = payload
+            return {'status': 'ALERT_FETCH_STREAM_STARTED', 'frames': [], 'error': False, 'error_message': None}
+
+        import relayx_app_sdk.alerts as alerts_module
+        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
 
         await alerts.history({
             'rule_type': 'DEVICE',
@@ -399,8 +406,7 @@ class TestAlertHistory:
             'end': '2024-01-02T00:00:00Z',
         })
 
-        call_data = json.loads(ctx.nats_client.request.call_args[0][1])
-        assert call_data['rule_states'] == ['fire', 'resolved']
+        assert captured['payload']['rule_states'] == ['fire', 'resolved', 'ack']
 
     @pytest.mark.asyncio
     async def test_missing_rule_type_raises(self, alerts):
@@ -422,12 +428,41 @@ class TestAlertHistory:
             })
 
     @pytest.mark.asyncio
-    async def test_rejects_ack_in_rule_states(self, alerts):
+    async def test_rejects_ack_all_in_rule_states(self, alerts):
         with pytest.raises(ValueError, match='invalid values'):
             await alerts.history({
                 'rule_type': 'DEVICE',
                 'device_ident': 'sensor-1',
-                'rule_states': ['fire', 'ack'],
+                'rule_states': ['fire', 'ack_all'],
+                'start': '2024-01-01T00:00:00Z',
+                'end': '2024-01-02T00:00:00Z',
+            })
+
+    @pytest.mark.asyncio
+    async def test_accepts_ack_in_rule_states(self, alerts, ctx, monkeypatch):
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            return {'status': 'ALERT_FETCH_STREAM_STARTED', 'frames': [], 'error': False, 'error_message': None}
+
+        import relayx_app_sdk.alerts as alerts_module
+        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
+
+        # Should not raise — "ack" is now a valid rule state
+        await alerts.history({
+            'rule_type': 'DEVICE',
+            'device_ident': 'sensor-1',
+            'rule_states': ['fire', 'ack'],
+            'start': '2024-01-01T00:00:00Z',
+            'end': '2024-01-02T00:00:00Z',
+        })
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_aggregate_fn(self, alerts):
+        with pytest.raises(ValueError, match="aggregate_fn for alerts must be 'count'"):
+            await alerts.history({
+                'rule_type': 'DEVICE',
+                'device_ident': 'sensor-1',
+                'rule_states': ['fire'],
+                'aggregate_fn': 'mean',
                 'start': '2024-01-01T00:00:00Z',
                 'end': '2024-01-02T00:00:00Z',
             })
@@ -439,96 +474,6 @@ class TestAlertHistory:
                 'rule_type': 'DEVICE',
                 'device_ident': 'sensor-1',
                 'rule_states': ['garbage'],
-                'start': '2024-01-01T00:00:00Z',
-                'end': '2024-01-02T00:00:00Z',
-            })
-
-
-# ──────────────────────────────────────────────────────────────
-# ack_history
-# ──────────────────────────────────────────────────────────────
-
-class TestAlertAckHistory:
-
-    @pytest.mark.asyncio
-    async def test_fetches_ack_history(self, alerts, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({
-                'status': 'ALERT_ACK_FETCH_SUCCESS',
-                'data': {
-                    'has_more': False,
-                    'cursor': None,
-                    'data': {'ack': [{'acked_by': 'op'}], 'ack_all': []},
-                },
-            })
-        )
-
-        result = await alerts.ack_history({
-            'rule_id': 'rule-1',
-            'ack_states': ['ack', 'ack_all'],
-            'start': '2024-01-01T00:00:00Z',
-            'end': '2024-01-02T00:00:00Z',
-        })
-
-        assert result['has_more'] is False
-        assert result['data']['ack'] == [{'acked_by': 'op'}]
-
-        call_args = ctx.nats_client.request.call_args
-        assert 'alerts.ack_history' in call_args[0][0]
-
-    @pytest.mark.asyncio
-    async def test_defaults_ack_states(self, alerts, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({
-                'status': 'ALERT_ACK_FETCH_SUCCESS',
-                'data': {'has_more': False, 'cursor': None, 'data': {}},
-            })
-        )
-
-        await alerts.ack_history({
-            'rule_id': 'rule-1',
-            'start': '2024-01-01T00:00:00Z',
-            'end': '2024-01-02T00:00:00Z',
-        })
-
-        call_data = json.loads(ctx.nats_client.request.call_args[0][1])
-        assert call_data['ack_states'] == ['ack', 'ack_all']
-
-    @pytest.mark.asyncio
-    async def test_missing_rule_id_raises(self, alerts):
-        with pytest.raises(ValueError, match='rule_id is required'):
-            await alerts.ack_history({
-                'ack_states': ['ack'],
-                'start': '2024-01-01T00:00:00Z',
-                'end': '2024-01-02T00:00:00Z',
-            })
-
-    @pytest.mark.asyncio
-    async def test_invalid_ack_states_raises(self, alerts):
-        with pytest.raises(ValueError, match='invalid values'):
-            await alerts.ack_history({
-                'rule_id': 'rule-1',
-                'ack_states': ['ack', 'invalid'],
-                'start': '2024-01-01T00:00:00Z',
-                'end': '2024-01-02T00:00:00Z',
-            })
-
-    @pytest.mark.asyncio
-    async def test_start_before_end(self, alerts):
-        with pytest.raises(ValueError, match='start must be before end'):
-            await alerts.ack_history({
-                'rule_id': 'rule-1',
-                'start': '2024-01-02T00:00:00Z',
-                'end': '2024-01-01T00:00:00Z',
-            })
-
-    @pytest.mark.asyncio
-    async def test_not_connected_raises(self, alerts, ctx):
-        ctx.connected = False
-
-        with pytest.raises(RuntimeError, match='Not connected'):
-            await alerts.ack_history({
-                'rule_id': 'rule-1',
                 'start': '2024-01-01T00:00:00Z',
                 'end': '2024-01-02T00:00:00Z',
             })
@@ -580,31 +525,9 @@ class TestAlertAck:
 
 
 # ──────────────────────────────────────────────────────────────
-# ack_all
+# ack_all and ack_history have been REMOVED — see history(rule_states=["ack"])
+# for ack-state queries.
 # ──────────────────────────────────────────────────────────────
-
-class TestAlertAckAll:
-
-    @pytest.mark.asyncio
-    async def test_non_ephemeral_ack_all(self, alerts, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_nats_response({'status': 'ALERT_ACK_SUCCESS'})
-        )
-
-        result = await alerts.ack_all({
-            'alert_id': 'alert-1',
-            'acked_by': 'admin',
-        })
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_missing_fields_raises(self, alerts):
-        with pytest.raises(ValueError, match='alert_id is required'):
-            await alerts.ack_all({'acked_by': 'admin'})
-
-        with pytest.raises(ValueError, match='acked_by is required'):
-            await alerts.ack_all({'alert_id': 'a'})
 
 
 # ──────────────────────────────────────────────────────────────

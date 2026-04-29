@@ -9,6 +9,7 @@ from .commands import CommandManager
 from .rpc import RPCManager
 from .events import EventManager
 from .alerts import AlertManager
+from .logs import LogManager
 from .logical_group import LogicalGroupManager
 from .heirarchy_group import HeirarchyGroupManager
 from .notifications import NotificationManager
@@ -57,6 +58,7 @@ class RelayApp:
         self.rpc = RPCManager(ctx)
         self.events = EventManager(ctx)
         self.alert = AlertManager(ctx)
+        self.log = LogManager(ctx)
         self.logical_group = LogicalGroupManager(ctx)
         self.heirarchy_group = HeirarchyGroupManager(ctx)
         self.notification = NotificationManager(ctx)

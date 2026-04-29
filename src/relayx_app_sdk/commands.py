@@ -3,9 +3,10 @@ import time
 import msgpack
 from datetime import datetime, timezone
 
+from .utils import stream_history, decode_stored_value
 from .validation import (
     validate_ident, validate_command_name, validate_non_empty_list,
-    validate_connected, validate_iso8601,
+    validate_connected, validate_iso8601, validate_callable,
 )
 
 
@@ -65,72 +66,64 @@ class CommandManager:
             now = datetime.now(timezone.utc)
             end = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
 
-        # Resolve device idents to IDs
+        on_frame = params.get('on_frame')
+        if on_frame is not None:
+            validate_callable(on_frame, 'on_frame')
+
+        # Resolve device idents to IDs.
         id_to_ident = {}
         device_ids = []
-        unfound = []
-
         command_history = {}
 
-        start_cursor = params['start']
-
         for ident in params['device_idents']:
+            command_history[ident] = []
             try:
                 device_id = await self._ctx.device.resolve_device_id(ident)
                 device_ids.append(device_id)
                 id_to_ident[device_id] = ident
-
-                command_history[ident] = []
             except (ValueError, Exception):
-                unfound.append(ident)
+                command_history[ident] = {'error': 'Device not found'}
 
         if not device_ids:
-            result = {}
-            for ident in unfound:
-                result[ident] = {'error': 'Device not found'}
-            return result
+            return command_history
 
-        # Fetch history
-        while True:
-            data = json.dumps({ 
-                'device_ids': device_ids,
-                'env': self._ctx.env,
-                'command_name': params['name'],
-                'start': start_cursor,
-                'end': end,
-            }).encode("utf-8")
+        payload = {
+            'device_ids': device_ids,
+            'env': self._ctx.env,
+            'command_name': params['name'],
+            'start': params['start'],
+            'end': end,
+        }
+        if params.get('interval'):
+            payload['interval'] = params['interval']
+        if params.get('aggregate_fn'):
+            payload['aggregate_fn'] = params['aggregate_fn']
 
-            res = None
+        result = await stream_history(
+            self._ctx,
+            f'api.iot.db.{self._ctx.org_id}.command.history',
+            payload,
+            on_frame=on_frame,
+        )
 
-            try:
-                res = await self._ctx.nats_client.request(
-                    f'api.iot.db.{self._ctx.org_id}.command.history',
-                    data,
-                    timeout=20,
-                )
+        if result.get('error'):
+            raise RuntimeError(
+                f"Command history failed: {result.get('error_message') or result.get('status')}"
+            )
 
-                decoded = msgpack.unpackb(res.data, raw=False)
-
-                if decoded["status"] == "COMMAND_FETCH_SUCCESS":
-                    command_data = decoded["data"]
-
-                    has_more = command_data["has_more"]
-
-                    for device_id, records in command_data['data'].items():
-                        ident = id_to_ident.get(device_id, device_id)
-                        command_history[ident] = command_history[ident] + records
-
-                    if has_more:
-                        start_cursor = command_data["cursor"]
-
-                        continue
-                    else:
-                        break
-                else:
-                    break
-
-            except Exception as e:
-                print(e)
-                raise ValueError("Command history request timed-out")
+        for frame in result['frames']:
+            data = frame.get('data') if isinstance(frame, dict) else None
+            if not data:
+                continue
+            for device_id, point in data.items():
+                ident = id_to_ident.get(device_id, device_id)
+                if not isinstance(command_history.get(ident), list):
+                    # was marked unfound, but server returned something
+                    command_history[ident] = []
+                value = decode_stored_value(point.get('value'))
+                command_history[ident].append({
+                    'value': value,
+                    'timestamp': point.get('timestamp'),
+                })
 
         return command_history

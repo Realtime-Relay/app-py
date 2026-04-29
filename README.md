@@ -32,6 +32,11 @@ async def main():
         "callback": lambda data: print(f"temp: {data}"),
     })
 
+    await app.log.stream({
+        "device_ident": "sensor-1",
+        "callback": lambda entry: print(f"[{entry['level']}] {entry['data']}"),
+    })
+
     # ... your application logic ...
 
     await app.disconnect()
@@ -138,6 +143,8 @@ await app.telemetry.off({"device_ident": "sensor-1"})
 
 ### History
 
+Returns each requested field as a list of `{value, timestamp}` points.
+
 ```python
 history = await app.telemetry.history({
     "device_ident": "sensor-1",
@@ -146,6 +153,47 @@ history = await app.telemetry.history({
     "end": "2026-03-25T00:00:00.000Z",
 })
 ```
+
+#### Aggregation
+
+Bucket by time with `interval` + `aggregate_fn`. Both must be supplied
+together. `interval` is a Flux duration (`"30s"`, `"5m"`, `"1h"`, `"1d"`).
+`aggregate_fn` is one of:
+
+| function | meaning |
+|---|---|
+| `mean` | arithmetic mean per bucket |
+| `min` / `max` | extrema per bucket |
+| `sum` | total per bucket |
+| `count` | number of points per bucket |
+| `first` / `last` | first or last point per bucket |
+| `median` | median per bucket |
+| `stddev` | standard deviation per bucket |
+
+```python
+# Hourly average temperature for the past day
+hourly_avg = await app.telemetry.history({
+    "device_ident": "sensor-1",
+    "fields": ["temperature"],
+    "start": "2026-04-28T00:00:00.000Z",
+    "end": "2026-04-29T00:00:00.000Z",
+    "interval": "1h",
+    "aggregate_fn": "mean",
+})
+
+# Daily peak humidity for the past month
+daily_max = await app.telemetry.history({
+    "device_ident": "sensor-1",
+    "fields": ["humidity"],
+    "start": start, "end": end,
+    "interval": "1d",
+    "aggregate_fn": "max",
+})
+```
+
+Numeric aggregates (`mean`, `min`, `max`, `sum`, `median`, `stddev`)
+require numeric metric values; non-numeric points are ignored.
+`count`, `first`, and `last` work on any value type.
 
 ### Latest
 
@@ -195,15 +243,42 @@ response = await app.rpc.call({
 
 ## Events
 
-Subscribe to device-published events.
+Subscribe to device-published events. `device_ident` accepts:
+
+- `"*"` — all devices in your org
+- `[ident]` — a single device
+- `[a, b, …]` — a specific list of devices
+
+The callback receives `{<device_ident>: <event_data>}` so you always
+know which device fired the event.
 
 ```python
+# One device
 await app.events.stream({
     "name": "door_opened",
-    "callback": lambda data: print(f"Event: {data}"),
+    "device_ident": ["entry-sensor"],
+    "callback": lambda payload: print(payload),
+})
+
+# All devices
+await app.events.stream({
+    "name": "boot",
+    "device_ident": "*",
+    "callback": lambda payload: print(payload),
 })
 
 await app.events.off({"name": "door_opened"})
+```
+
+### History
+
+```python
+events = await app.events.history({
+    "device_ident": "sensor-1",
+    "event_names": ["door_opened", "boot"],
+    "start": "2026-03-01T00:00:00.000Z",
+    "end": "2026-03-25T00:00:00.000Z",
+})
 ```
 
 ## Alerts
@@ -238,37 +313,52 @@ await alert.listen({
     "on_fire": lambda data: print("FIRED:", data),
     "on_resolved": lambda data: print("RESOLVED:", data),
     "on_ack": lambda data: print("ACK:", data),
-    "on_ack_all": lambda data: print("ACK ALL:", data),
 })
 ```
 
+Each fire / resolved / ack event carries an `incident_id` that's stable
+across the lifetime of an alerting episode — minted when the alert
+goes from `normal → alerting`, persisted across cooldown re-fires and
+acks, and cleared only on resolution. Use it to group related events.
+
 ### History
+
+History fires through the same streaming protocol as telemetry/events
+and supports filtering by alert state (`fire`, `resolved`, `ack`) and
+optionally by `incident_id`.
 
 ```python
 history = await app.alert.history({
     "rule_type": "RULE",  # "RULE" | "DEVICE"
     "rule_id": alert["id"],
-    "rule_states": ["fire", "resolved"],
+    "rule_states": ["fire", "resolved", "ack"],
     "start": "2026-03-01T00:00:00.000Z",
     "end": "2026-03-25T00:00:00.000Z",
+})
+
+# Walk a single incident end-to-end
+incident = await app.alert.history({
+    "rule_type": "DEVICE",
+    "device_ident": "sensor-1",
+    "incident_id": "<incident_uuid>",
+    "start": start,
+    "end": end,
 })
 ```
 
 ### Acknowledge
 
+`device_id` is required — it identifies which device's incident gets
+acknowledged. After ack, cooldown re-fires for the same incident are
+recorded for audit but do not dispatch notifications until the alert
+resolves and a new incident begins.
+
 ```python
-# Acknowledge for a specific device
 await app.alert.ack({
     "device_id": "<device_id>",
     "alert_id": alert["id"],
     "acked_by": "operator-1",
     "ack_notes": "Investigating",
-})
-
-# Acknowledge all instances
-await app.alert.ack_all({
-    "alert_id": alert["id"],
-    "acked_by": "operator-1",
 })
 ```
 
@@ -317,6 +407,61 @@ await alert.listen({
 
 # Stop
 await alert.stop()
+```
+
+## Logs
+
+Subscribe to live device logs and query history. Each log entry carries
+a `level` (`info` | `warn` | `error`), a `data` payload, and a
+device-side `timestamp`.
+
+> **Note:** When running an interactive REPL or any prompt-driven
+> example, wrap blocking calls like `input()` with
+> `await asyncio.to_thread(input, ...)`. A bare `input()` inside an
+> `async def` blocks the whole event loop and the log dispatch task
+> will starve.
+
+### Live Streaming
+
+```python
+# All levels
+await app.log.stream({
+    "device_ident": "sensor-1",
+    "callback": lambda entry: print(f"[{entry['level']}] {entry['data']}"),
+})
+
+# Errors only
+await app.log.stream({
+    "device_ident": "sensor-1",
+    "levels": ["error"],
+    "callback": lambda entry: print("ERROR:", entry["data"]),
+})
+
+await app.log.off({"device_ident": "sensor-1"})
+```
+
+### History
+
+Returns logs grouped by level. Optionally bucket with `interval` +
+`aggregate_fn="count"` for per-level counts over time.
+
+```python
+logs = await app.log.history({
+    "device_ident": "sensor-1",
+    "start": "2026-04-28T00:00:00.000Z",
+    "end": "2026-04-29T00:00:00.000Z",
+})
+# {"info": [...], "warn": [...], "error": [...]}
+
+# Hourly error counts
+hourly = await app.log.history({
+    "device_ident": "sensor-1",
+    "levels": ["error"],
+    "start": start,
+    "end": end,
+    "interval": "1h",
+    "aggregate_fn": "count",
+})
 ```
 
 ## Logical Groups

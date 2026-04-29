@@ -3,9 +3,8 @@ import json
 import uuid
 import msgpack
 import nats.js.api
-import time
 
-from .utils import invoke_callback
+from .utils import invoke_callback, stream_history
 from .validation import (
     validate_ident, validate_callable, validate_connected,
     validate_non_empty_list, validate_iso8601, validate_start_before_end,
@@ -16,8 +15,7 @@ from .ephemeral_alerting import EphemeralEngine
 
 VALID_SOURCES = ['TELEMETRY', 'COMMAND', 'EVENT']
 VALID_RULE_TYPES = ['DEVICE', 'RULE']
-VALID_EVENT_STATES = ['fire', 'resolved']
-VALID_ACK_STATES = ['ack', 'ack_all']
+VALID_ALERT_STATES = ['fire', 'resolved', 'ack']
 
 
 class Alert:
@@ -272,6 +270,8 @@ class AlertManager:
     # ─── History ───────────────────────────────────────────────
 
     async def history(self, params):
+        """Fetch alert event history (fire / resolved / ack) over the streaming
+        protocol. Returns an event timeline ordered by timestamp."""
         validate_connected(self._ctx.connected)
 
         rule_type = params.get('rule_type')
@@ -291,18 +291,28 @@ class AlertManager:
         if rule_states:
             validate_non_empty_list(rule_states, 'rule_states')
 
-            invalid_states = [s for s in rule_states if s not in VALID_EVENT_STATES]
+            invalid_states = [s for s in rule_states if s not in VALID_ALERT_STATES]
             if invalid_states:
-                raise ValueError(f"rule_states contains invalid values: {', '.join(invalid_states)}. Valid: {', '.join(VALID_EVENT_STATES)}")
+                raise ValueError(
+                    f"rule_states contains invalid values: {', '.join(invalid_states)}. Valid values: {', '.join(VALID_ALERT_STATES)}"
+                )
+
+        aggregate_fn = params.get('aggregate_fn')
+        if aggregate_fn and aggregate_fn != 'count':
+            raise ValueError("aggregate_fn for alerts must be 'count'")
 
         validate_iso8601(params.get('start'), 'start')
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
 
+        on_frame = params.get('on_frame')
+        if on_frame is not None:
+            validate_callable(on_frame, 'on_frame')
+
         payload = {
             'rule_type': rule_type,
             'env': self._ctx.env,
-            'rule_states': rule_states or ['fire', 'resolved'],
+            'rule_states': rule_states or ['fire', 'resolved', 'ack'],
             'start': params['start'],
             'end': params['end'],
         }
@@ -313,146 +323,85 @@ class AlertManager:
         if rule_type == 'RULE':
             payload['rule_id'] = params['rule_id']
 
-        res = await self._ctx.nats_client.request(
+        if params.get('incident_id'):
+            payload['incident_id'] = params['incident_id']
+        if params.get('interval'):
+            payload['interval'] = params['interval']
+        if aggregate_fn:
+            payload['aggregate_fn'] = aggregate_fn
+
+        result = await stream_history(
+            self._ctx,
             f'api.iot.db.{self._ctx.org_id}.alerts.history',
-            json.dumps(payload).encode(),
-            timeout=20,
+            payload,
+            on_frame=on_frame,
         )
 
-        decoded = json.loads(res.data.decode())
+        if result.get('error'):
+            raise RuntimeError(
+                f"Alert history failed: {result.get('error_message') or result.get('status')}"
+            )
 
-        if decoded.get('status') == 'ALERT_FETCH_SUCCESS':
-            data = decoded.get('data', {})
-            return {
-                'has_more': data.get('has_more'),
-                'cursor': data.get('cursor'),
-                'data': data.get('data'),
-            }
+        # Each frame: { last, data: { <state>: { value, timestamp, incident_id } } }
+        # Flatten into a chronological event list.
+        events = []
+        for frame in result['frames']:
+            data = frame.get('data') if isinstance(frame, dict) else None
+            if not data:
+                continue
+            for state, point in data.items():
+                events.append({
+                    'state': state,
+                    'value': point.get('value'),
+                    'timestamp': point.get('timestamp'),
+                    'incident_id': point.get('incident_id'),
+                })
 
-        return decoded
-
-    async def ack_history(self, params):
-        validate_connected(self._ctx.connected)
-
-        if not params.get('rule_id'):
-            raise ValueError('rule_id is required')
-
-        ack_states = params.get('ack_states')
-        if ack_states:
-            validate_non_empty_list(ack_states, 'ack_states')
-
-            invalid_states = [s for s in ack_states if s not in VALID_ACK_STATES]
-            if invalid_states:
-                raise ValueError(f"ack_states contains invalid values: {', '.join(invalid_states)}. Valid: {', '.join(VALID_ACK_STATES)}")
-
-        validate_iso8601(params.get('start'), 'start')
-        validate_iso8601(params.get('end'), 'end')
-        validate_start_before_end(params['start'], params['end'])
-
-        payload = {
-            'rule_id': params['rule_id'],
-            'env': self._ctx.env,
-            'ack_states': ack_states or ['ack', 'ack_all'],
-            'start': params['start'],
-            'end': params['end'],
-        }
-
-        res = await self._ctx.nats_client.request(
-            f'api.iot.db.{self._ctx.org_id}.alerts.ack_history',
-            json.dumps(payload).encode(),
-            timeout=20,
-        )
-
-        decoded = json.loads(res.data.decode())
-
-        if decoded.get('status') == 'ALERT_ACK_FETCH_SUCCESS':
-            data = decoded.get('data', {})
-            return {
-                'has_more': data.get('has_more'),
-                'cursor': data.get('cursor'),
-                'data': data.get('data'),
-            }
-
-        return decoded
+        return {'events': events}
 
 
-    # ─── Ack / AckAll ──────────────────────────────────────────
+    # ─── Ack ───────────────────────────────────────────────────
 
     async def ack(self, params):
+        """Acknowledge the current incident for an alert. device_id is REQUIRED
+        on every path, matching JS alerts.js:395."""
         validate_connected(self._ctx.connected)
 
-        if not params.get('device_id'):
-            raise ValueError('device_id is required')
         if not params.get('alert_id'):
             raise ValueError('alert_id is required')
         if not params.get('acked_by'):
             raise ValueError('acked_by is required')
+        if not params.get('device_id'):
+            raise ValueError('device_id is required')
 
-        # Check local ephemeral owner
+        # Local ephemeral owner — in-process ack.
         engine = self._ephemeral_engines.get(params['alert_id'])
         if engine and engine.mode == 'owner':
-            return await engine.ack(params['acked_by'], params.get('ack_notes'))
+            return await engine.ack(
+                params['device_id'], params['acked_by'], params.get('ack_notes'),
+            )
 
-        # Check ephemeral without local engine — RPC to owner
+        # Listener-side ephemeral — RPC to the remote owner using msgpack.
         meta = self._alert_metadata.get(params['alert_id'])
         if meta and meta.get('type') == 'EPHEMERAL':
             subject = f"{self._ctx.org_id}.{self._ctx.env}.alerts.custom.{params['alert_id']}.ack"
 
             data = msgpack.packb({
-                'status': 'acknowledged',
                 'device_id': params['device_id'],
-                'ack': {
-                    'acked_by': params['acked_by'],
-                    'ack_notes': params.get('ack_notes'),
-                    'acked_at': int(time.time() * 1000),
-                },
+                'acked_by': params['acked_by'],
+                'ack_notes': params.get('ack_notes'),
             })
 
             res = await self._ctx.nats_client.request(subject, data, timeout=10)
-            result = json.loads(res.data.decode())
+            try:
+                result = msgpack.unpackb(res.data, raw=False)
+            except Exception:
+                result = json.loads(res.data.decode())
             return result.get('status') == 'ACK_SUCCESS'
 
-        # Non-ephemeral — backend
+        # Backend (non-ephemeral) — per-(rule, device) incident.
         res = await self._request('ack', {
             'device_id': params['device_id'],
-            'rule_id': params['alert_id'],
-            'acked_by': params['acked_by'],
-            'env': self._ctx.env,
-            'ack_notes': params.get('ack_notes'),
-        })
-
-        return res.get('status') == 'ALERT_ACK_SUCCESS'
-
-    async def ack_all(self, params):
-        validate_connected(self._ctx.connected)
-
-        if not params.get('alert_id'):
-            raise ValueError('alert_id is required')
-        if not params.get('acked_by'):
-            raise ValueError('acked_by is required')
-
-        engine = self._ephemeral_engines.get(params['alert_id'])
-        if engine and engine.mode == 'owner':
-            return await engine.ack_all(params['acked_by'], params.get('ack_notes'))
-
-        meta = self._alert_metadata.get(params['alert_id'])
-        if meta and meta.get('type') == 'EPHEMERAL':
-            subject = f"{self._ctx.org_id}.{self._ctx.env}.alerts.custom.{params['alert_id']}.ack_all"
-
-            data = msgpack.packb({
-                'status': 'acknowledged',
-                'ack': {
-                    'acked_by': params['acked_by'],
-                    'ack_notes': params.get('ack_notes'),
-                    'acked_at': int(time.time() * 1000),
-                },
-            })
-
-            res = await self._ctx.nats_client.request(subject, data, timeout=10)
-            result = json.loads(res.data.decode())
-            return result.get('status') == 'ACK_SUCCESS'
-
-        res = await self._request('ack_all', {
             'rule_id': params['alert_id'],
             'acked_by': params['acked_by'],
             'env': self._ctx.env,
@@ -480,13 +429,16 @@ class AlertManager:
         if mute_config.get('type') == 'TIME_BASED' and not mute_config.get('mute_till'):
             raise ValueError('mute_till is required for TIME_BASED mute')
 
-        # Ephemeral — RPC to owner
+        # Ephemeral — RPC to owner using msgpack.
         meta = self._alert_metadata.get(params['id'])
         if meta and meta.get('type') == 'EPHEMERAL':
             subject = f"{self._ctx.org_id}.{self._ctx.env}.alerts.custom.{params['id']}.mute"
             data = msgpack.packb({'mute_config': mute_config})
             res = await self._ctx.nats_client.request(subject, data, timeout=10)
-            return json.loads(res.data.decode())
+            try:
+                return msgpack.unpackb(res.data, raw=False)
+            except Exception:
+                return json.loads(res.data.decode())
 
         # Non-ephemeral — backend
         payload = {'rule_id': params['id'], 'type': mute_config['type']}
@@ -507,7 +459,10 @@ class AlertManager:
             subject = f"{self._ctx.org_id}.{self._ctx.env}.alerts.custom.{alert_id}.mute"
             data = msgpack.packb({'mute_config': {'type': 'CLEAR'}})
             res = await self._ctx.nats_client.request(subject, data, timeout=10)
-            return json.loads(res.data.decode())
+            try:
+                return msgpack.unpackb(res.data, raw=False)
+            except Exception:
+                return json.loads(res.data.decode())
 
         return await self._request('mute', {'rule_id': alert_id, 'type': 'CLEAR'})
 
@@ -526,7 +481,6 @@ class AlertManager:
             'fire': callbacks.get('on_fire'),
             'resolved': callbacks.get('on_resolved'),
             'ack': callbacks.get('on_ack'),
-            'ack_all': callbacks.get('on_ack_all'),
         }
 
         sub = await self._ctx.jetstream.subscribe(

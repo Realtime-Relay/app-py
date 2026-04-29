@@ -13,7 +13,6 @@ EVENT_TYPE_TO_CALLBACK = {
     'fire': 'on_fire',
     'resolved': 'on_resolved',
     'ack': 'on_ack',
-    'ack_all': 'on_ack_all',
 }
 
 

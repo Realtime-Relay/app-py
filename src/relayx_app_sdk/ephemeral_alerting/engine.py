@@ -57,19 +57,12 @@ class EphemeralEngine:
             self._delegate = None
             self._mode = None
 
-    async def ack(self, acked_by, ack_notes=None):
+    async def ack(self, device_id, acked_by, ack_notes=None):
         """Acknowledge the current alert. Only available in owner mode."""
         if not self._delegate or self._mode != 'owner':
             raise RuntimeError('ack is only available in owner mode')
 
-        return await self._delegate.ack(acked_by, ack_notes)
-
-    async def ack_all(self, acked_by, ack_notes=None):
-        """Acknowledge all alerts. Only available in owner mode."""
-        if not self._delegate or self._mode != 'owner':
-            raise RuntimeError('ack_all is only available in owner mode')
-
-        return await self._delegate.ack_all(acked_by, ack_notes)
+        return await self._delegate.ack(device_id, acked_by, ack_notes)
 
     @property
     def state(self):

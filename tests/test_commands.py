@@ -112,19 +112,19 @@ class TestCommandSend:
 class TestCommandHistory:
 
     @pytest.mark.asyncio
-    async def test_returns_history(self, command, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=make_msgpack_response({
-                'status': 'COMMAND_FETCH_SUCCESS',
-                'data': {
-                    'has_more': False,
-                    'cursor': None,
-                    'data': {
-                        'dev-id-1': [{'value': 'ok', 'timestamp': 123}],
-                    },
-                },
-            })
-        )
+    async def test_returns_history(self, command, ctx, monkeypatch):
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            return {
+                'status': 'COMMAND_FETCH_STREAM_STARTED',
+                'frames': [
+                    {'last': True, 'data': {'dev-id-1': {'value': 'ok', 'timestamp': 123}}},
+                ],
+                'error': False,
+                'error_message': None,
+            }
+
+        import relayx_app_sdk.commands as cmd_module
+        monkeypatch.setattr(cmd_module, 'stream_history', fake_stream_history)
 
         result = await command.history({
             'name': 'reboot',

@@ -272,13 +272,20 @@ class TestTelemetryOff:
 class TestTelemetryHistory:
 
     @pytest.mark.asyncio
-    async def test_sends_correct_request(self, telemetry, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=MockMsg(msgpack.packb({
-                'status': 'TELEMETRY_FETCH_SUCCESS',
-                'data': {'has_more': False, 'cursor': None, 'data': {'temp': [{'value': 25}]}},
-            }))
-        )
+    async def test_sends_correct_request(self, telemetry, ctx, monkeypatch):
+        # Mock the streaming protocol via stream_history
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            return {
+                'status': 'TELEMETRY_FETCH_STREAM_STARTED',
+                'frames': [
+                    {'last': True, 'data': {'temp': {'value': 25, 'timestamp': 123}}},
+                ],
+                'error': False,
+                'error_message': None,
+            }
+
+        import relayx_app_sdk.telemetry as tlm_module
+        monkeypatch.setattr(tlm_module, 'stream_history', fake_stream_history)
 
         result = await telemetry.history({
             'device_ident': 'sensor-1',
@@ -287,10 +294,7 @@ class TestTelemetryHistory:
             'end': '2024-01-02T00:00:00Z',
         })
 
-        assert result == {'temp': [{'value': 25}]}
-
-        call_args = ctx.nats_client.request.call_args
-        assert 'telemetry.history' in call_args[0][0]
+        assert result == {'temp': [{'value': 25, 'timestamp': 123}]}
 
     @pytest.mark.asyncio
     async def test_validates_fields(self, telemetry, ctx):
@@ -320,13 +324,23 @@ class TestTelemetryHistory:
 class TestTelemetryLatest:
 
     @pytest.mark.asyncio
-    async def test_calls_history_endpoint(self, telemetry, ctx):
-        ctx.nats_client.request = AsyncMock(
-            return_value=MockMsg(msgpack.packb({
-                'status': 'TELEMETRY_FETCH_SUCCESS',
-                'data': {'data': {'temp': [{'value': 30, 'time': '2026-03-24T00:00:00Z'}]}},
-            }))
-        )
+    async def test_calls_history_endpoint(self, telemetry, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_stream_history(c, subject, payload, on_frame=None):
+            captured['subject'] = subject
+            captured['payload'] = payload
+            return {
+                'status': 'TELEMETRY_FETCH_STREAM_STARTED',
+                'frames': [
+                    {'last': True, 'data': {'temp': {'value': 30, 'timestamp': '2026-03-24T00:00:00Z'}}},
+                ],
+                'error': False,
+                'error_message': None,
+            }
+
+        import relayx_app_sdk.telemetry as tlm_module
+        monkeypatch.setattr(tlm_module, 'stream_history', fake_stream_history)
 
         result = await telemetry.latest({
             'device_ident': 'sensor-1',
@@ -335,9 +349,9 @@ class TestTelemetryLatest:
             'end': '2026-03-24T00:00:00Z',
         })
 
-        call_args = ctx.nats_client.request.call_args
-        assert 'telemetry.history' in call_args[0][0]
-        assert result == {'temp': {'value': 30, 'time': '2026-03-24T00:00:00Z'}}
+        assert 'telemetry.history' in captured['subject']
+        assert captured['payload']['last_value'] is True
+        assert result == {'temp': {'value': 30, 'timestamp': '2026-03-24T00:00:00Z'}}
 
 
 # ──────────────────────────────────────────────────────────────

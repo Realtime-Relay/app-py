@@ -108,7 +108,9 @@ class EphemeralOwner:
         self._rolling_state = {}
         self._state = create_fresh_state()
 
-    async def ack(self, acked_by, ack_notes=None):
+    async def ack(self, device_id, acked_by, ack_notes=None):
+        """Local ack — targets the rule's current incident. State machine is
+        rule-scoped; the audit event carries device_id for Influx tagging."""
         if self._state['status'] != 'alerting':
             return False
 
@@ -119,6 +121,8 @@ class EphemeralOwner:
 
         payload = {
             'status': 'acknowledged',
+            'device_id': device_id,
+            'incident_id': self._state.get('incident_id'),
             'ack': {
                 'acked_by': acked_by,
                 'ack_notes': ack_notes,
@@ -129,32 +133,6 @@ class EphemeralOwner:
         await publish_event(self._ctx, self._rule, 'ack', payload)
 
         cb = self._callbacks.get('on_ack')
-        if cb:
-            await invoke_callback(cb, payload)
-
-        return True
-
-    async def ack_all(self, acked_by, ack_notes=None):
-        if self._state['status'] != 'alerting':
-            return False
-
-        self._state['status'] = 'acknowledged'
-        self._state['acked_by'] = acked_by
-        self._state['acked_at'] = int(time.time() * 1000)
-        self._state['ack_notes'] = ack_notes
-
-        payload = {
-            'status': 'acknowledged',
-            'ack': {
-                'acked_by': acked_by,
-                'ack_notes': ack_notes,
-                'acked_at': self._state['acked_at'],
-            },
-        }
-
-        await publish_event(self._ctx, self._rule, 'ack_all', payload)
-
-        cb = self._callbacks.get('on_ack_all')
         if cb:
             await invoke_callback(cb, payload)
 
@@ -246,8 +224,6 @@ class EphemeralOwner:
 
                     if last_token == 'ack':
                         await self._handle_ack_rpc(msg)
-                    elif last_token == 'ack_all':
-                        await self._handle_ack_all_rpc(msg)
                     elif last_token == 'mute':
                         await self._handle_mute_rpc(msg)
                 except Exception as e:
@@ -256,10 +232,11 @@ class EphemeralOwner:
             self._ctx.logger.error('RPC consumer loop ended', e)
 
     async def _handle_ack_rpc(self, msg):
+        """Handle remote ack request. Reply is msgpack to match JS."""
         data = msgpack.unpackb(msg.data, raw=False)
 
         if self._state['status'] != 'alerting':
-            await msg.respond(json.dumps({'status': 'ACK_FAILED', 'reason': 'not in alerting state'}).encode())
+            await msg.respond(msgpack.packb({'status': 'ACK_FAILED', 'reason': 'not in alerting state'}))
             return
 
         self._state['status'] = 'acknowledged'
@@ -270,6 +247,7 @@ class EphemeralOwner:
         payload = {
             'status': 'acknowledged',
             'device_id': data.get('device_id'),
+            'incident_id': self._state.get('incident_id'),
             'ack': {
                 'acked_by': data.get('acked_by'),
                 'ack_notes': data.get('ack_notes'),
@@ -283,36 +261,7 @@ class EphemeralOwner:
         if cb:
             await invoke_callback(cb, payload)
 
-        await msg.respond(json.dumps({'status': 'ACK_SUCCESS'}).encode())
-
-    async def _handle_ack_all_rpc(self, msg):
-        data = msgpack.unpackb(msg.data, raw=False)
-
-        if self._state['status'] != 'alerting':
-            await msg.respond(json.dumps({'status': 'ACK_FAILED', 'reason': 'not in alerting state'}).encode())
-            return
-
-        self._state['status'] = 'acknowledged'
-        self._state['acked_by'] = data.get('acked_by')
-        self._state['acked_at'] = int(time.time() * 1000)
-        self._state['ack_notes'] = data.get('ack_notes')
-
-        payload = {
-            'status': 'acknowledged',
-            'ack': {
-                'acked_by': data.get('acked_by'),
-                'ack_notes': data.get('ack_notes'),
-                'acked_at': self._state['acked_at'],
-            },
-        }
-
-        await publish_event(self._ctx, self._rule, 'ack_all', payload)
-
-        cb = self._callbacks.get('on_ack_all')
-        if cb:
-            await invoke_callback(cb, payload)
-
-        await msg.respond(json.dumps({'status': 'ACK_SUCCESS'}).encode())
+        await msg.respond(msgpack.packb({'status': 'ACK_SUCCESS'}))
 
     async def _handle_mute_rpc(self, msg):
         data = msgpack.unpackb(msg.data, raw=False)
@@ -326,7 +275,7 @@ class EphemeralOwner:
         # Sync mute to backend (matches JS #syncMuteToBackend)
         await self._sync_mute_to_backend()
 
-        await msg.respond(json.dumps({'status': 'MUTE_SUCCESS'}).encode())
+        await msg.respond(msgpack.packb({'status': 'MUTE_SUCCESS'}))
 
     async def _sync_mute_to_backend(self):
         try:
@@ -433,11 +382,15 @@ class EphemeralOwner:
             held_for = now - self._state['breached_since']
 
             if self._state['status'] == 'normal' and held_for >= duration_ms:
-                # FIRE
+                # normal -> alerting: open a new incident
                 self._state['status'] = 'alerting'
                 self._state['last_fired'] = now
+                self._state['incident_id'] = str(uuid.uuid4())
 
-                fire_payload = build_alert_payload(self._rule, self._rolling_state, now, device_id)
+                incident_id = self._state['incident_id']
+                fire_payload = build_alert_payload(
+                    self._rule, self._rolling_state, now, device_id, incident_id,
+                )
                 await publish_event(self._ctx, self._rule, 'fire', fire_payload)
 
                 await dispatch_notifications(self._ctx, self._rule, {
@@ -447,6 +400,7 @@ class EphemeralOwner:
                         'config': self._rule.get('config', {}),
                     },
                     'device_id': device_id,
+                    'incident_id': incident_id,
                     'last_value': self._rolling_state,
                     'timestamp': int(time.time() * 1000),
                 })
@@ -456,10 +410,13 @@ class EphemeralOwner:
                     await invoke_callback(cb, fire_payload)
 
             elif self._state['status'] == 'alerting' and (now - self._state['last_fired']) >= cooldown_ms:
-                # Re-FIRE (cooldown elapsed)
+                # alerting cooldown re-fire: notify
                 self._state['last_fired'] = now
 
-                fire_payload = build_alert_payload(self._rule, self._rolling_state, now, device_id)
+                incident_id = self._state.get('incident_id')
+                fire_payload = build_alert_payload(
+                    self._rule, self._rolling_state, now, device_id, incident_id,
+                )
                 await publish_event(self._ctx, self._rule, 'fire', fire_payload)
 
                 await dispatch_notifications(self._ctx, self._rule, {
@@ -469,6 +426,7 @@ class EphemeralOwner:
                         'config': self._rule.get('config', {}),
                     },
                     'device_id': device_id,
+                    'incident_id': incident_id,
                     'last_value': self._rolling_state,
                     'timestamp': int(time.time() * 1000),
                 })
@@ -477,7 +435,18 @@ class EphemeralOwner:
                 if cb:
                     await invoke_callback(cb, fire_payload)
 
-            # acknowledged -> silent (no action)
+            elif self._state['status'] == 'acknowledged' and (now - self._state['last_fired']) >= cooldown_ms:
+                # acknowledged cooldown re-fire: audit-only.
+                # publish_event still goes out so the server-side audit log
+                # shows the breach is ongoing. NO dispatch_notifications,
+                # NO on_fire callback. Matches JS owner.js:396-405.
+                self._state['last_fired'] = now
+
+                incident_id = self._state.get('incident_id')
+                fire_payload = build_alert_payload(
+                    self._rule, self._rolling_state, now, device_id, incident_id,
+                )
+                await publish_event(self._ctx, self._rule, 'fire', fire_payload)
 
         else:
             self._state['breached_since'] = None
@@ -488,8 +457,13 @@ class EphemeralOwner:
             cleared_for = now - self._state['clear_since']
 
             if self._state['status'] in ('alerting', 'acknowledged') and cleared_for >= recovery_ms:
-                # RESOLVED
-                resolved_payload = build_alert_payload(self._rule, self._rolling_state, now, device_id)
+                # Capture closing incident_id BEFORE clearing so the resolved
+                # event ties to the correct incident.
+                closing_incident_id = self._state.get('incident_id')
+
+                resolved_payload = build_alert_payload(
+                    self._rule, self._rolling_state, now, device_id, closing_incident_id,
+                )
                 await publish_event(self._ctx, self._rule, 'resolved', resolved_payload)
 
                 await dispatch_notifications(self._ctx, self._rule, {
@@ -499,6 +473,7 @@ class EphemeralOwner:
                         'config': self._rule.get('config', {}),
                     },
                     'device_id': '',
+                    'incident_id': closing_incident_id,
                     'last_value': self._rolling_state,
                     'timestamp': int(time.time() * 1000),
                 })
@@ -507,13 +482,14 @@ class EphemeralOwner:
                 if cb:
                     await invoke_callback(cb, resolved_payload)
 
-                # Reset state
+                # Reset state including incident_id.
                 self._state['status'] = 'normal'
                 self._state['acked_by'] = None
                 self._state['acked_at'] = None
                 self._state['ack_notes'] = None
                 self._state['breached_since'] = None
                 self._state['clear_since'] = None
+                self._state['incident_id'] = None
 
         self._state['last_evaluated_at'] = now
 
@@ -627,8 +603,10 @@ class EphemeralOwner:
 
                 if silence_ms >= recovery_ms:
                     # Auto-resolve: silence exceeded recovery_duration
+                    closing_incident_id = self._state.get('incident_id')
+
                     resolved_payload = build_alert_payload(
-                        self._rule, self._rolling_state, now, '',
+                        self._rule, self._rolling_state, now, '', closing_incident_id,
                     )
 
                     await publish_event(self._ctx, self._rule, 'resolved', resolved_payload)
@@ -640,6 +618,7 @@ class EphemeralOwner:
                             'config': config,
                         },
                         'device_id': '',
+                        'incident_id': closing_incident_id,
                         'last_value': self._rolling_state,
                         'timestamp': now,
                     })
@@ -648,13 +627,14 @@ class EphemeralOwner:
                     if cb:
                         await invoke_callback(cb, resolved_payload)
 
-                    # Reset state
+                    # Reset state including incident_id.
                     self._state['status'] = 'normal'
                     self._state['acked_by'] = None
                     self._state['acked_at'] = None
                     self._state['ack_notes'] = None
                     self._state['breached_since'] = None
                     self._state['clear_since'] = None
+                    self._state['incident_id'] = None
 
         self._recovery_task = asyncio.create_task(recovery_loop())
 
