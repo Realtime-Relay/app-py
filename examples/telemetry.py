@@ -30,7 +30,7 @@ async def main():
     app = RelayApp({
         'api_key': API_KEY,
         'secret': SECRET,
-        'mode': 'test',
+        'mode': 'production',
     })
 
     app.connection.listeners(lambda event: print(f'[connection] {event}'))
@@ -42,17 +42,17 @@ async def main():
     # ── Stream live telemetry ─────────────────────────────────
 
     # Subscribe to specific metrics
-    # def on_telemetry(data):
-    #     print(f'  [{data["metric"]}] {data["data"]}')
+    def on_telemetry(data):
+        print(f'  [{data["metric"]}] {data["data"]}')
 
-    # await app.telemetry.stream({
-    #     'device_ident': 's-3',
-    #     'metric': ['temperature', 'humidity'],
-    #     'callback': on_telemetry,
-    # })
+    await app.telemetry.stream({
+        'device_ident': 's-3',
+        'metric': ['temperature', 'humidity'],
+        'callback': on_telemetry,
+    })
 
-    # print('Streaming temperature & humidity from s-3 for 15 seconds...')
-    # await asyncio.sleep(15)
+    print('Streaming temperature & humidity from s-3 for 15 seconds...')
+    await asyncio.sleep(150)
 
     # Subscribe to all metrics
     # await app.telemetry.stream({
@@ -80,33 +80,33 @@ async def main():
 
     # ── Query telemetry history ───────────────────────────────
 
-    history = await app.telemetry.history({
-        'device_ident': 's-3',
-        'fields': ['temperature', 'humidity'],
-        'start': '2025-01-01T00:00:00.000Z',
-        'end': '2026-12-31T23:59:59.000Z',
-    })
+    # history = await app.telemetry.history({
+    #     'device_ident': 's-3',
+    #     'fields': ['temperature', 'humidity'],
+    #     'start': '2025-01-01T00:00:00.000Z',
+    #     'end': '2026-12-31T23:59:59.000Z',
+    # })
 
-    print('Telemetry history:')
-    print(json.dumps(history, indent=4))
-    print()
+    # print('Telemetry history:')
+    # print(json.dumps(history, indent=4))
+    # print()
 
-    print(f"Temperature => {len(history["temperature"])}")
-    print(f"Humidity => {len(history["humidity"])}")
-    print()
+    # print(f"Temperature => {len(history["temperature"])}")
+    # print(f"Humidity => {len(history["humidity"])}")
+    # print()
 
-    # ── Fetch latest values ───────────────────────────────────
+    # # ── Fetch latest values ───────────────────────────────────
 
-    latest = await app.telemetry.latest({
-        'device_ident': 's-3',
-        'fields': ['temperature', 'humidity'],
-        'start': '2025-01-01T00:00:00.000Z',
-        'end': '2026-12-31T23:59:59.000Z',
-    })
+    # latest = await app.telemetry.latest({
+    #     'device_ident': 's-3',
+    #     'fields': ['temperature', 'humidity'],
+    #     'start': '2025-01-01T00:00:00.000Z',
+    #     'end': '2026-12-31T23:59:59.000Z',
+    # })
 
-    print('Latest telemetry:')
-    print(json.dumps(latest, indent=4))
-    print()
+    # print('Latest telemetry:')
+    # print(json.dumps(latest, indent=4))
+    # print()
 
 
     # ── Cleanup ───────────────────────────────────────────────

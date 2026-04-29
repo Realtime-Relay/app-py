@@ -5,7 +5,7 @@ import msgpack
 import nats.js.api
 from datetime import datetime, timedelta, timezone
 
-from .utils import invoke_callback
+from .utils import invoke_callback, stream_history, decode_stored_value
 from .validation import (
     validate_ident, validate_callable,
     validate_connected, validate_list, validate_non_empty_list,
@@ -143,63 +143,58 @@ class TelemetryManager:
         validate_connected(self._ctx.connected)
         validate_ident(params.get('device_ident'), 'device_ident')
         validate_non_empty_list(params.get('fields'), 'fields')
-        
+
         await self._validate_fields(params['device_ident'], params['fields'])
-        
+
         validate_iso8601(params.get('start'), 'start')
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
 
+        on_frame = params.get('on_frame')
+        if on_frame is not None:
+            validate_callable(on_frame, 'on_frame')
+
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
-        telemetry = {}
+        payload = {
+            'device_id': device_id,
+            'env': self._ctx.env,
+            'start': params['start'],
+            'end': params['end'],
+            'fields': params['fields'],
+            'last_value': False,
+        }
+        if params.get('interval'):
+            payload['interval'] = params['interval']
+        if params.get('aggregate_fn'):
+            payload['aggregate_fn'] = params['aggregate_fn']
 
-        start_cursor = params['start']
+        result = await stream_history(
+            self._ctx,
+            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+            payload,
+            on_frame=on_frame,
+        )
 
-        for field in params['fields']:
-            telemetry[field] = []
+        if result.get('error'):
+            raise RuntimeError(
+                f"Telemetry history failed: {result.get('error_message') or result.get('status')}"
+            )
 
-        while True:
-            try:
-                data = json.dumps({
-                    'device_id': device_id,
-                    'env': self._ctx.env,
-                    'start': start_cursor,
-                    'end': params['end'],
-                    'fields': params['fields'],
-                    'last_value': False
-                }).encode()
+        telemetry = {field: [] for field in params['fields']}
 
-                res = await self._ctx.nats_client.request(
-                    f'api.iot.db.{self._ctx.org_id}.telemetry.history',
-                    data,
-                    timeout=20,
-                )
-
-                res = msgpack.unpackb(res.data, raw=False)
-
-                if res["status"] == "TELEMETRY_FETCH_SUCCESS":
-                    tlmData = res["data"]["data"]
-
-                    has_more = res["data"]["has_more"]
-
-                    for metric in tlmData.keys():
-                        telemetry[metric] = telemetry[metric] + tlmData[metric]
-
-                    if(has_more):
-                        start_cursor = res["data"]["cursor"]
-                        continue
-                    else:
-                        # We got all the data, we're done
-                        break
-                else:
-                    # We weren't able to fetch tlm
-
-                    break
-
-            except Exception as e:
-                print(e)
-                raise ValueError("Telemetry history request timed-out")
+        for frame in result['frames']:
+            data = frame.get('data') if isinstance(frame, dict) else None
+            if not data:
+                continue
+            for metric, point in data.items():
+                if metric not in telemetry:
+                    telemetry[metric] = []
+                value = decode_stored_value(point.get('value'))
+                telemetry[metric].append({
+                    'value': value,
+                    'timestamp': point.get('timestamp'),
+                })
 
         return telemetry
 
@@ -216,40 +211,36 @@ class TelemetryManager:
 
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
-        res = None
-        telemetry = {}
-
-        for field in params['fields']:
-            telemetry[field] = {}
-        
-        try:
-            data = json.dumps({
+        result = await stream_history(
+            self._ctx,
+            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+            {
                 'device_id': device_id,
                 'env': self._ctx.env,
                 'start': params['start'],
                 'end': params['end'],
                 'fields': params['fields'],
-                'last_value': True
-            }).encode()
+                'last_value': True,
+            },
+        )
 
-            res = await self._ctx.nats_client.request(
-                f'api.iot.db.{self._ctx.org_id}.telemetry.history',
-                data,
-                timeout=20,
+        if result.get('error'):
+            raise RuntimeError(
+                f"Telemetry latest failed: {result.get('error_message') or result.get('status')}"
             )
 
-            res = msgpack.unpackb(res.data, raw=False)
-        except Exception as e:
-            print(e)
-            raise ValueError("Telemetry history request timed-out")
-        
-        if res["status"] == "TELEMETRY_FETCH_SUCCESS":
-            tlmData = res["data"]["data"]
+        latest = {}
+        if not result['frames']:
+            return latest
 
-            for metric in tlmData.keys():
-                telemetry[metric] = tlmData[metric][0]
+        only_frame = result['frames'][0]
+        data = only_frame.get('data') if isinstance(only_frame, dict) else None
+        if data:
+            for metric, point in data.items():
+                value = decode_stored_value(point.get('value'))
+                latest[metric] = {'value': value, 'timestamp': point.get('timestamp')}
 
-        return telemetry
+        return latest
 
 
     # ─── Internal Helpers ──────────────────────────────────────

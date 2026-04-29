@@ -30,7 +30,7 @@ async def main():
     app = RelayApp({
         'api_key': API_KEY,
         'secret': SECRET,
-        'mode': 'test',
+        'mode': 'production',
     })
 
     # Listen for connection lifecycle events
@@ -42,14 +42,15 @@ async def main():
 
     # ── Send a command to one device ──────────────────────────
 
-    # result = await app.command.send({
-    #     'name': 'setConfig',
-    #     'device_ident': ['s-3'],
-    #     'data': {
-    #         'reason': 'firmware update',
-    #         'delay_seconds': 5,
-    #     },
-    # })
+    # for i in range(0, 2000):
+    #     result = await app.command.send({
+    #         'name': 'setConfig',
+    #         'device_ident': ['s-3'],
+    #         'data': {
+    #             'reason': 'firmware update',
+    #             'delay_seconds': 5,
+    #         },
+    #     })
 
     # print('Send to one device:')
     # for ident, status in result.items():
