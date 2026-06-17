@@ -129,11 +129,12 @@ async def http_history(ctx, path, payload, page_limit=10000):
     """
     frames = []
     offset = 0
+
+    # Fetch the token once up front; only re-fetch if a page comes back 401/403.
+    token, url = await ensure_influx_auth(ctx)
     tried_refresh = False
 
     while True:
-        token, url = await ensure_influx_auth(ctx)
-
         try:
             status, body = await asyncio.to_thread(
                 _influx_post,
@@ -144,10 +145,10 @@ async def http_history(ctx, path, payload, page_limit=10000):
         except Exception as e:
             return {'error': True, 'error_message': str(e) or 'network error', 'frames': frames}
 
-        # Expired / invalid token: refetch once, then retry the same page.
+        # Token expired / invalid: refresh once, then retry the same page.
         if status in (401, 403) and not tried_refresh:
             tried_refresh = True
-            await ensure_influx_auth(ctx, force=True)
+            token, url = await ensure_influx_auth(ctx, force=True)
             continue
 
         if status != 200 or not (isinstance(body, dict) and body.get('status')):
@@ -163,7 +164,7 @@ async def http_history(ctx, path, payload, page_limit=10000):
             break
 
         offset = page.get('next_offset')
-        tried_refresh = False  # a later page may outlive the current token
+        tried_refresh = False  # allow one refresh per page if a long run outlives the token
 
     return {'frames': frames, 'error': False, 'error_message': None}
 
