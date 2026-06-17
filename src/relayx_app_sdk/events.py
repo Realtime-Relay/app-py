@@ -3,7 +3,7 @@ import uuid
 import msgpack
 import nats.js.api
 
-from .utils import invoke_callback, stream_history, decode_stored_value
+from .utils import invoke_callback, http_history, decode_stored_value
 from .validation import (
     validate_ident, validate_event_name, validate_callable, validate_connected,
     validate_non_empty_list, validate_iso8601, validate_start_before_end,
@@ -160,10 +160,6 @@ class EventManager:
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
 
-        on_frame = params.get('on_frame')
-        if on_frame is not None:
-            validate_callable(on_frame, 'on_frame')
-
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
         payload = {
@@ -178,11 +174,10 @@ class EventManager:
         if params.get('aggregate_fn'):
             payload['aggregate_fn'] = params['aggregate_fn']
 
-        result = await stream_history(
+        result = await http_history(
             self._ctx,
-            f'api.iot.db.{self._ctx.org_id}.event.history',
+            '/iot/db/event/history',
             payload,
-            on_frame=on_frame,
         )
 
         if result.get('error'):
@@ -192,11 +187,11 @@ class EventManager:
 
         events = {name: [] for name in params['event_names']}
 
+        # REST frames are the raw row: {'<event_name>': {'value': ..., 'timestamp': ...}}.
         for frame in result['frames']:
-            data = frame.get('data') if isinstance(frame, dict) else None
-            if not data:
+            if not isinstance(frame, dict):
                 continue
-            for name, point in data.items():
+            for name, point in frame.items():
                 if name not in events:
                     events[name] = []
                 value = decode_stored_value(point.get('value'))

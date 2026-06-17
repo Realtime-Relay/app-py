@@ -5,7 +5,7 @@ import msgpack
 import nats.js.api
 from datetime import datetime, timedelta, timezone
 
-from .utils import invoke_callback, stream_history, decode_stored_value
+from .utils import invoke_callback, http_history, decode_stored_value
 from .validation import (
     validate_ident, validate_callable,
     validate_connected, validate_list, validate_non_empty_list,
@@ -150,10 +150,6 @@ class TelemetryManager:
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
 
-        on_frame = params.get('on_frame')
-        if on_frame is not None:
-            validate_callable(on_frame, 'on_frame')
-
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
         payload = {
@@ -169,11 +165,10 @@ class TelemetryManager:
         if params.get('aggregate_fn'):
             payload['aggregate_fn'] = params['aggregate_fn']
 
-        result = await stream_history(
+        result = await http_history(
             self._ctx,
-            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+            '/iot/db/telemetry/history',
             payload,
-            on_frame=on_frame,
         )
 
         if result.get('error'):
@@ -183,11 +178,11 @@ class TelemetryManager:
 
         telemetry = {field: [] for field in params['fields']}
 
+        # REST frames are the raw row: {'<metric>': {'value': ..., 'timestamp': ...}}.
         for frame in result['frames']:
-            data = frame.get('data') if isinstance(frame, dict) else None
-            if not data:
+            if not isinstance(frame, dict):
                 continue
-            for metric, point in data.items():
+            for metric, point in frame.items():
                 if metric not in telemetry:
                     telemetry[metric] = []
                 value = decode_stored_value(point.get('value'))
@@ -211,9 +206,9 @@ class TelemetryManager:
 
         device_id = await self._ctx.device.resolve_device_id(params['device_ident'])
 
-        result = await stream_history(
+        result = await http_history(
             self._ctx,
-            f'api.iot.db.{self._ctx.org_id}.telemetry.history',
+            '/iot/db/telemetry/history',
             {
                 'device_id': device_id,
                 'env': self._ctx.env,
@@ -233,10 +228,10 @@ class TelemetryManager:
         if not result['frames']:
             return latest
 
+        # REST frames are the raw row: {'<metric>': {'value': ..., 'timestamp': ...}}.
         only_frame = result['frames'][0]
-        data = only_frame.get('data') if isinstance(only_frame, dict) else None
-        if data:
-            for metric, point in data.items():
+        if isinstance(only_frame, dict):
+            for metric, point in only_frame.items():
                 value = decode_stored_value(point.get('value'))
                 latest[metric] = {'value': value, 'timestamp': point.get('timestamp')}
 

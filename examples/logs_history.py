@@ -1,12 +1,11 @@
 """
-Alert history example — fetch alert event history for device "mc-01"
-(fire / resolved / ack).
+Logs history example — fetch device log history for "mc-01" (info/warn/error).
 
-Goes through app.alert.history(), which now hits the influx-db-service REST API
-(POST /iot/db/alerts/history) under the hood — same inputs/outputs as before.
+Goes through app.log.history(), which now hits the influx-db-service REST API
+(POST /iot/db/log/history) under the hood — same inputs/outputs as before.
 
 Usage:
-    RELAY_API_KEY=... RELAY_SECRET=... python examples/alert_history.py
+    RELAY_API_KEY=... RELAY_SECRET=... python examples/logs_history.py
 """
 
 import asyncio
@@ -20,7 +19,7 @@ API_KEY = os.environ.get('RELAY_API_KEY', '')
 SECRET = os.environ.get('RELAY_SECRET', '')
 
 DEVICE_IDENT = 'mc-01'
-RULE_STATES = ['fire', 'resolved', 'ack']
+LEVELS = ['info', 'warn', 'error']
 START = '2026-06-16T00:00:00.000Z'
 END = '2026-06-18T00:00:00.000Z'
 
@@ -32,22 +31,21 @@ async def main():
 
     try:
         t0 = time.perf_counter()
-        data = await app.alert.history({
-            'rule_type': 'DEVICE',
+        data = await app.log.history({
             'device_ident': DEVICE_IDENT,
-            'rule_states': RULE_STATES,
+            'levels': LEVELS,
             'start': START,
             'end': END,
         })
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
 
-        # data = { 'events': [{ 'state', 'value', 'timestamp', 'incident_id' }, ...] }
-        events = data.get('events', [])
+        # data = { 'info': [...], 'warn': [...], 'error': [...] }
         print(json.dumps(data, indent=2, default=str))
-        print(f'mc-01 alerts: {len(events)} event(s)')
+        for level in LEVELS:
+            print(f'mc-01 "{level}": {len(data.get(level, []))} log(s)')
         print(f'fetched in {elapsed_ms}ms')
     except Exception as e:
-        print(f'alert.history failed: {e}')
+        print(f'log.history failed: {e}')
     finally:
         await app.disconnect()
 

@@ -361,20 +361,18 @@ class TestAlertHistory:
 
     @pytest.mark.asyncio
     async def test_device_history(self, alerts, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
+        async def fake_http_history(c, path, payload):
+            assert path == '/iot/db/alerts/history'
             return {
-                'status': 'ALERT_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {
-                        'fire': {'value': 1, 'timestamp': 100, 'incident_id': 'i-1'},
-                    }},
+                    {'fire': {'value': 1, 'timestamp': 100, 'incident_id': 'i-1'}},
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.alerts as alerts_module
-        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(alerts_module, 'http_history', fake_http_history)
 
         result = await alerts.history({
             'rule_type': 'DEVICE',
@@ -392,12 +390,12 @@ class TestAlertHistory:
     async def test_defaults_rule_states(self, alerts, ctx, monkeypatch):
         captured = {}
 
-        async def fake_stream_history(c, subject, payload, on_frame=None):
+        async def fake_http_history(c, path, payload):
             captured['payload'] = payload
-            return {'status': 'ALERT_FETCH_STREAM_STARTED', 'frames': [], 'error': False, 'error_message': None}
+            return {'frames': [], 'error': False, 'error_message': None}
 
         import relayx_app_sdk.alerts as alerts_module
-        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(alerts_module, 'http_history', fake_http_history)
 
         await alerts.history({
             'rule_type': 'DEVICE',
@@ -440,11 +438,11 @@ class TestAlertHistory:
 
     @pytest.mark.asyncio
     async def test_accepts_ack_in_rule_states(self, alerts, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
-            return {'status': 'ALERT_FETCH_STREAM_STARTED', 'frames': [], 'error': False, 'error_message': None}
+        async def fake_http_history(c, path, payload):
+            return {'frames': [], 'error': False, 'error_message': None}
 
         import relayx_app_sdk.alerts as alerts_module
-        monkeypatch.setattr(alerts_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(alerts_module, 'http_history', fake_http_history)
 
         # Should not raise — "ack" is now a valid rule state
         await alerts.history({

@@ -113,18 +113,18 @@ class TestCommandHistory:
 
     @pytest.mark.asyncio
     async def test_returns_history(self, command, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
+        async def fake_http_history(c, path, payload):
+            assert path == '/iot/db/command/history'
             return {
-                'status': 'COMMAND_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {'dev-id-1': {'value': 'ok', 'timestamp': 123}}},
+                    {'dev-id-1': {'value': 'ok', 'timestamp': 123}},
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.commands as cmd_module
-        monkeypatch.setattr(cmd_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(cmd_module, 'http_history', fake_http_history)
 
         result = await command.history({
             'name': 'reboot',
