@@ -4,7 +4,7 @@ import uuid
 import msgpack
 import nats.js.api
 
-from .utils import invoke_callback, stream_history
+from .utils import invoke_callback, http_history
 from .validation import (
     validate_ident, validate_callable, validate_connected,
     validate_non_empty_list, validate_iso8601, validate_start_before_end,
@@ -305,10 +305,6 @@ class AlertManager:
         validate_iso8601(params.get('end'), 'end')
         validate_start_before_end(params['start'], params['end'])
 
-        on_frame = params.get('on_frame')
-        if on_frame is not None:
-            validate_callable(on_frame, 'on_frame')
-
         payload = {
             'rule_type': rule_type,
             'env': self._ctx.env,
@@ -330,11 +326,10 @@ class AlertManager:
         if aggregate_fn:
             payload['aggregate_fn'] = aggregate_fn
 
-        result = await stream_history(
+        result = await http_history(
             self._ctx,
-            f'api.iot.db.{self._ctx.org_id}.alerts.history',
+            '/iot/db/alerts/history',
             payload,
-            on_frame=on_frame,
         )
 
         if result.get('error'):
@@ -342,14 +337,14 @@ class AlertManager:
                 f"Alert history failed: {result.get('error_message') or result.get('status')}"
             )
 
-        # Each frame: { last, data: { <state>: { value, timestamp, incident_id } } }
+        # REST frames are the raw row:
+        #   {'<state>': {'value': ..., 'timestamp': ..., 'incident_id': ...}}
         # Flatten into a chronological event list.
         events = []
         for frame in result['frames']:
-            data = frame.get('data') if isinstance(frame, dict) else None
-            if not data:
+            if not isinstance(frame, dict):
                 continue
-            for state, point in data.items():
+            for state, point in frame.items():
                 events.append({
                     'state': state,
                     'value': point.get('value'),

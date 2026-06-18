@@ -273,19 +273,19 @@ class TestTelemetryHistory:
 
     @pytest.mark.asyncio
     async def test_sends_correct_request(self, telemetry, ctx, monkeypatch):
-        # Mock the streaming protocol via stream_history
-        async def fake_stream_history(c, subject, payload, on_frame=None):
+        # Mock the HTTP history fetch
+        async def fake_http_history(c, path, payload):
+            assert path == '/iot/db/telemetry/history'
             return {
-                'status': 'TELEMETRY_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {'temp': {'value': 25, 'timestamp': 123}}},
+                    {'temp': {'value': 25, 'timestamp': 123}},
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.telemetry as tlm_module
-        monkeypatch.setattr(tlm_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(tlm_module, 'http_history', fake_http_history)
 
         result = await telemetry.history({
             'device_ident': 'sensor-1',
@@ -327,20 +327,19 @@ class TestTelemetryLatest:
     async def test_calls_history_endpoint(self, telemetry, ctx, monkeypatch):
         captured = {}
 
-        async def fake_stream_history(c, subject, payload, on_frame=None):
-            captured['subject'] = subject
+        async def fake_http_history(c, path, payload):
+            captured['path'] = path
             captured['payload'] = payload
             return {
-                'status': 'TELEMETRY_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {'temp': {'value': 30, 'timestamp': '2026-03-24T00:00:00Z'}}},
+                    {'temp': {'value': 30, 'timestamp': '2026-03-24T00:00:00Z'}},
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.telemetry as tlm_module
-        monkeypatch.setattr(tlm_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(tlm_module, 'http_history', fake_http_history)
 
         result = await telemetry.latest({
             'device_ident': 'sensor-1',
@@ -349,7 +348,7 @@ class TestTelemetryLatest:
             'end': '2026-03-24T00:00:00Z',
         })
 
-        assert 'telemetry.history' in captured['subject']
+        assert captured['path'] == '/iot/db/telemetry/history'
         assert captured['payload']['last_value'] is True
         assert result == {'temp': {'value': 30, 'timestamp': '2026-03-24T00:00:00Z'}}
 

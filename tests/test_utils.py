@@ -1,11 +1,12 @@
 """Tests for the utils module — build_credentials, topic_pattern_matcher,
-decode_stored_value, stream_history."""
+decode_stored_value, http_history."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import relayx_app_sdk.utils as utils_module
 from relayx_app_sdk.utils import (
-    build_credentials, topic_pattern_matcher, decode_stored_value, stream_history,
+    build_credentials, topic_pattern_matcher, decode_stored_value, http_history,
 )
 
 
@@ -107,81 +108,98 @@ class TestDecodeStoredValue:
 
 
 # ──────────────────────────────────────────────────────────────
-# stream_history
+# http_history
 # ──────────────────────────────────────────────────────────────
 
-import msgpack
+class TestHttpHistory:
 
-
-class _FakeMsg:
-    def __init__(self, data, subject='s'):
-        self.data = data
-        self.subject = subject
-
-
-class _FakeSub:
-    def __init__(self, msgs):
-        self._msgs = list(msgs)
-        self.unsubscribed = False
-
-    async def next_msg(self, timeout=None):
-        if not self._msgs:
-            raise asyncio.TimeoutError()
-        return self._msgs.pop(0)
-
-    async def unsubscribe(self):
-        self.unsubscribed = True
-
-
-import asyncio
-
-
-class TestStreamHistory:
+    def _auth(self, ctx):
+        # Pre-seed the cached influx token/url so ensure_influx_auth
+        # short-circuits without a NATS round trip.
+        ctx._influx_token = 'tok'
+        ctx._influx_url = 'http://influx'
 
     @pytest.mark.asyncio
-    async def test_no_stream_status(self, ctx):
-        ctx.nats_client.subscribe = AsyncMock(return_value=_FakeSub([]))
-        ctx.nats_client.request = AsyncMock(return_value=_FakeMsg(
-            msgpack.packb({'status': 'TELEMETRY_FETCH_SUCCESS_NO_STREAM', 'data': {'foo': 1}})
-        ))
-        ctx.nats_client.publish = AsyncMock()
+    async def test_collects_single_page(self, ctx, monkeypatch):
+        self._auth(ctx)
 
-        result = await stream_history(ctx, 'api.test', {'q': 1})
+        def fake_post(url, token, body):
+            assert url == 'http://influx/iot/db/telemetry/history'
+            assert token == 'tok'
+            return 200, {'status': True, 'data': {
+                'frames': [{'temp': {'value': 1, 'timestamp': 1}}],
+                'page': {'has_more': False},
+            }}
 
-        assert result['status'] == 'TELEMETRY_FETCH_SUCCESS_NO_STREAM'
-        assert result['frames'] == []
+        monkeypatch.setattr(utils_module, '_influx_post', fake_post)
+
+        result = await http_history(ctx, '/iot/db/telemetry/history', {'q': 1})
+
         assert result['error'] is False
+        assert result['frames'] == [{'temp': {'value': 1, 'timestamp': 1}}]
 
     @pytest.mark.asyncio
-    async def test_streams_frames_until_last(self, ctx):
-        frame1 = msgpack.packb({'last': False, 'data': {'temp': {'value': 1, 'timestamp': 1}}})
-        frame2 = msgpack.packb({'last': True, 'data': {'temp': {'value': 2, 'timestamp': 2}}})
+    async def test_paginates_until_no_more(self, ctx, monkeypatch):
+        self._auth(ctx)
+        pages = [
+            (200, {'status': True, 'data': {
+                'frames': [{'temp': {'value': 1, 'timestamp': 1}}],
+                'page': {'has_more': True, 'next_offset': 1},
+            }}),
+            (200, {'status': True, 'data': {
+                'frames': [{'temp': {'value': 2, 'timestamp': 2}}],
+                'page': {'has_more': False},
+            }}),
+        ]
+        calls = []
 
-        ctx.nats_client.subscribe = AsyncMock(return_value=_FakeSub([
-            _FakeMsg(frame1), _FakeMsg(frame2),
-        ]))
-        ctx.nats_client.request = AsyncMock(return_value=_FakeMsg(
-            msgpack.packb({
-                'status': 'TELEMETRY_FETCH_STREAM_STARTED',
-                'data': {'ready_subject': 'ready.subj'},
-            })
-        ))
-        ctx.nats_client.publish = AsyncMock()
+        def fake_post(url, token, body):
+            calls.append(body['offset'])
+            return pages.pop(0)
 
-        result = await stream_history(ctx, 'api.test', {'q': 1})
+        monkeypatch.setattr(utils_module, '_influx_post', fake_post)
+
+        result = await http_history(ctx, '/iot/db/telemetry/history', {})
 
         assert result['error'] is False
         assert len(result['frames']) == 2
-        assert result['frames'][1]['last'] is True
-        ctx.nats_client.publish.assert_awaited_once()
+        assert calls == [0, 1]  # second page requested at next_offset
 
     @pytest.mark.asyncio
-    async def test_failure_status(self, ctx):
-        ctx.nats_client.subscribe = AsyncMock(return_value=_FakeSub([]))
-        ctx.nats_client.request = AsyncMock(return_value=_FakeMsg(
-            msgpack.packb({'status': 'TELEMETRY_FETCH_FAILURE'})
-        ))
+    async def test_failure_envelope(self, ctx, monkeypatch):
+        self._auth(ctx)
 
-        result = await stream_history(ctx, 'api.test', {'q': 1})
+        def fake_post(url, token, body):
+            return 400, {'status': False, 'data': {
+                'code': 'TELEMETRY_FETCH_FAILURE', 'errors': ['bad start'],
+            }}
+
+        monkeypatch.setattr(utils_module, '_influx_post', fake_post)
+
+        result = await http_history(ctx, '/iot/db/telemetry/history', {})
 
         assert result['error'] is True
+        assert result['status'] == 'TELEMETRY_FETCH_FAILURE'
+        assert result['frames'] == []
+
+    @pytest.mark.asyncio
+    async def test_refetches_token_on_401(self, ctx, monkeypatch):
+        self._auth(ctx)
+        # token request the forced refetch will make
+        ctx.nats_client.request = AsyncMock(return_value=MagicMock(
+            data=b'{"status":"HTTP_TOKEN_SUCCESS","data":{"token":"tok2","http_url":"http://influx"}}'
+        ))
+        responses = [(401, None), (200, {'status': True, 'data': {
+            'frames': [{'temp': {'value': 9, 'timestamp': 9}}],
+            'page': {'has_more': False},
+        }})]
+
+        def fake_post(url, token, body):
+            return responses.pop(0)
+
+        monkeypatch.setattr(utils_module, '_influx_post', fake_post)
+
+        result = await http_history(ctx, '/iot/db/telemetry/history', {})
+
+        assert result['error'] is False
+        assert result['frames'] == [{'temp': {'value': 9, 'timestamp': 9}}]

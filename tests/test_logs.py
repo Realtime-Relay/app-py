@@ -125,22 +125,21 @@ class TestLogHistory:
 
     @pytest.mark.asyncio
     async def test_returns_logs_grouped_by_level(self, logs, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
-            assert 'log.history' in subject
+        async def fake_http_history(c, path, payload):
+            assert path == '/iot/db/log/history'
             return {
-                'status': 'LOG_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {
+                    {
                         'info': {'value': 'hello', 'timestamp': 100},
                         'error': {'value': 'oops', 'timestamp': 101},
-                    }},
+                    },
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.logs as logs_module
-        monkeypatch.setattr(logs_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(logs_module, 'http_history', fake_http_history)
 
         result = await logs.history({
             'device_ident': 'sensor-1',
@@ -154,20 +153,19 @@ class TestLogHistory:
 
     @pytest.mark.asyncio
     async def test_decodes_json_string_values(self, logs, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
+        async def fake_http_history(c, path, payload):
             return {
-                'status': 'LOG_FETCH_STREAM_STARTED',
                 'frames': [
-                    {'last': True, 'data': {
+                    {
                         'info': {'value': '{"k":"v"}', 'timestamp': 100},
-                    }},
+                    },
                 ],
                 'error': False,
                 'error_message': None,
             }
 
         import relayx_app_sdk.logs as logs_module
-        monkeypatch.setattr(logs_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(logs_module, 'http_history', fake_http_history)
 
         result = await logs.history({
             'device_ident': 'sensor-1',
@@ -209,11 +207,11 @@ class TestLogHistory:
 
     @pytest.mark.asyncio
     async def test_error_status_raises(self, logs, ctx, monkeypatch):
-        async def fake_stream_history(c, subject, payload, on_frame=None):
-            return {'status': 'LOG_FETCH_FAILURE', 'frames': [], 'error': True, 'error_message': 'boom'}
+        async def fake_http_history(c, path, payload):
+            return {'frames': [], 'error': True, 'error_message': 'boom'}
 
         import relayx_app_sdk.logs as logs_module
-        monkeypatch.setattr(logs_module, 'stream_history', fake_stream_history)
+        monkeypatch.setattr(logs_module, 'http_history', fake_http_history)
 
         with pytest.raises(RuntimeError, match='Log history failed'):
             await logs.history({

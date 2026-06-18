@@ -3,7 +3,7 @@ import time
 import msgpack
 from datetime import datetime, timezone
 
-from .utils import stream_history, decode_stored_value
+from .utils import http_history, decode_stored_value
 from .validation import (
     validate_ident, validate_command_name, validate_non_empty_list,
     validate_connected, validate_iso8601, validate_callable,
@@ -66,10 +66,6 @@ class CommandManager:
             now = datetime.now(timezone.utc)
             end = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
 
-        on_frame = params.get('on_frame')
-        if on_frame is not None:
-            validate_callable(on_frame, 'on_frame')
-
         # Resolve device idents to IDs.
         id_to_ident = {}
         device_ids = []
@@ -99,11 +95,10 @@ class CommandManager:
         if params.get('aggregate_fn'):
             payload['aggregate_fn'] = params['aggregate_fn']
 
-        result = await stream_history(
+        result = await http_history(
             self._ctx,
-            f'api.iot.db.{self._ctx.org_id}.command.history',
+            '/iot/db/command/history',
             payload,
-            on_frame=on_frame,
         )
 
         if result.get('error'):
@@ -111,11 +106,11 @@ class CommandManager:
                 f"Command history failed: {result.get('error_message') or result.get('status')}"
             )
 
+        # REST frames are the raw row: {'<device_id>': {'value': ..., 'timestamp': ...}}.
         for frame in result['frames']:
-            data = frame.get('data') if isinstance(frame, dict) else None
-            if not data:
+            if not isinstance(frame, dict):
                 continue
-            for device_id, point in data.items():
+            for device_id, point in frame.items():
                 ident = id_to_ident.get(device_id, device_id)
                 if not isinstance(command_history.get(ident), list):
                     # was marked unfound, but server returned something

@@ -1,9 +1,8 @@
 import asyncio
 import inspect
 import json
-import uuid
-
-import msgpack
+import urllib.error
+import urllib.request
 
 
 async def invoke_callback(cb, *args):
@@ -46,144 +45,128 @@ def decode_stored_value(value):
     return value
 
 
-async def stream_history(ctx, request_subject, payload, on_frame=None,
-                         request_timeout=20.0, idle_timeout=30.0,
-                         ready_timeout=10.0):
-    """Drives the streaming-history protocol against the db_manager service.
+# ─── HTTP history (influx-db-service) ─────────────────────────────────────
+#
+# The history endpoints moved off NATS streaming onto the influx-db-service
+# REST API. Auth mirrors OTA: exchange the NATS credential for a short-lived
+# HS256 bearer + base URL via accounts.user.get_http_token (service "influx"),
+# cached on ctx and shared by every history() method, refetched on a 401/403.
 
-    Wire protocol mirrors JS streamHistory:
-      1. Generate a stream_token (uuid).
-      2. Subscribe to `import.<orgID>.<env>.history.<token>` BEFORE sending
-         the request.
-      3. Send the NATS request including stream_token in the payload.
-      4. Server replies with one of three statuses:
-           *_FETCH_STREAM_STARTED      -> server is waiting on ready signal
-           *_FETCH_SUCCESS_NO_STREAM   -> no data; no frames will be published
-           *_FETCH_FAILURE             -> validation or query error
-      5. On STREAM_STARTED: publish empty msgpack body to ready_subject to
-         signal readiness; server begins streaming.
-      6. Receive frames until `last: true`. Each frame's shape is endpoint-
-         specific.
+async def ensure_influx_auth(ctx, force=False):
+    token = getattr(ctx, '_influx_token', None)
+    url = getattr(ctx, '_influx_url', None)
+    if not force and token and url:
+        return token, url
 
-    Returns:
-      {'status': <reply status>, 'data': <reply.data | None>, 'frames': [...],
-       'error': bool, 'error_message': str | None}
-    """
-    stream_token = str(uuid.uuid4())
-    export_subject = f'import.{ctx.org_id}.{ctx.env}.history.{stream_token}'
-
-    sub = await ctx.nats_client.subscribe(export_subject)
-
-    # Send request with stream_token included.
     try:
-        req_payload = {**payload, 'stream_token': stream_token}
         res = await ctx.nats_client.request(
-            request_subject,
-            json.dumps(req_payload).encode(),
-            timeout=request_timeout,
+            'accounts.user.get_http_token',
+            json.dumps({'jwt': ctx.api_key, 'service': 'influx'}).encode(),
+            timeout=20.0,
         )
-    except Exception:
-        try:
-            await sub.unsubscribe()
-        except Exception:
-            pass
-        raise
+        reply = json.loads(res.data.decode())
+    except Exception as e:
+        raise RuntimeError(f'get_http_token (influx) failed: {e}')
 
-    # Server may reply with msgpack on success, JSON on failure.
+    data = reply.get('data') if isinstance(reply, dict) else None
+    if (not isinstance(reply, dict) or reply.get('status') != 'HTTP_TOKEN_SUCCESS'
+            or not (data or {}).get('token') or not (data or {}).get('http_url')):
+        reason = (reply.get('msg') or (data or {}).get('msg')
+                  or reply.get('status') or 'unknown error') if isinstance(reply, dict) else 'unknown error'
+        raise RuntimeError(f'get_http_token (influx) failed: {reason}')
+
+    ctx._influx_token = data['token']
+    ctx._influx_url = data['http_url'].rstrip('/')
+    return ctx._influx_token, ctx._influx_url
+
+
+def _influx_post(url, token, body):
+    """Blocking POST (run via asyncio.to_thread). Returns (status_code, parsed_json)."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        method='POST',
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}',
+        },
+    )
     try:
-        decoded = msgpack.unpackb(res.data, raw=False)
-    except Exception:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        # Non-2xx: the body still carries the error envelope.
+        raw = e.read().decode() if e.fp is not None else ''
         try:
-            decoded = json.loads(res.data.decode())
-        except Exception:
-            try:
-                await sub.unsubscribe()
-            except Exception:
-                pass
-            raise
+            parsed = json.loads(raw) if raw else None
+        except ValueError:
+            parsed = None
+        return e.code, parsed
 
-    status = decoded.get('status') if isinstance(decoded, dict) else None
-    data_field = decoded.get('data') if isinstance(decoded, dict) else None
 
-    # No-data success: nothing will be published.
-    if isinstance(status, str) and status.endswith('_NO_STREAM'):
-        try:
-            await sub.unsubscribe()
-        except Exception:
-            pass
-        return {'status': status, 'data': data_field, 'frames': [], 'error': False, 'error_message': None}
+def _read_history_error(body, http_status):
+    d = (body or {}).get('data') if isinstance(body, dict) else None
+    d = d or {}
+    msg = d.get('code') or d.get('message')
+    if not msg:
+        errs = d.get('errors')
+        msg = ', '.join(errs) if isinstance(errs, list) else f'HTTP {http_status}'
+    return d.get('code'), msg
 
-    # Anything other than STREAM_STARTED: failure.
-    if not isinstance(status, str) or not status.endswith('_STREAM_STARTED'):
-        try:
-            await sub.unsubscribe()
-        except Exception:
-            pass
-        return {'status': status, 'data': data_field, 'frames': [], 'error': True, 'error_message': None}
 
-    ready_subject = (data_field or {}).get('ready_subject') if isinstance(data_field, dict) else None
-    if not ready_subject:
-        try:
-            await sub.unsubscribe()
-        except Exception:
-            pass
-        raise RuntimeError(f'{request_subject} replied STREAM_STARTED without ready_subject')
+async def http_history(ctx, path, payload, page_limit=10000):
+    """POST a history query to the influx-db-service and collect ALL pages.
 
-    # Signal ready -- empty msgpack body, server doesn't read it.
-    await ctx.nats_client.publish(ready_subject, msgpack.packb({}))
+    The REST endpoint paginates (limit/offset, has_more/next_offset); this loops
+    through every page so the caller gets the full range, matching the old NATS
+    streaming behavior. Each frame is the endpoint's raw row -- for events,
+    {'<name>': {'value': ..., 'timestamp': ...}}.
 
+    Returns {'frames': [...], 'error': bool, 'error_message': str | None}
+    (frames = whatever arrived before an error). Callers check result['error'],
+    then aggregate result['frames'].
+    """
     frames = []
-    timed_out = False
+    offset = 0
 
-    try:
-        while True:
-            try:
-                msg = await asyncio.wait_for(sub.next_msg(timeout=idle_timeout), timeout=idle_timeout)
-            except asyncio.TimeoutError:
-                timed_out = True
-                break
-            except Exception:
-                # Underlying client may surface its own timeout errors; treat as idle timeout.
-                timed_out = True
-                break
+    # Fetch the token once up front; only re-fetch if a page comes back 401/403.
+    token, url = await ensure_influx_auth(ctx)
+    tried_refresh = False
 
-            if msg is None:
-                timed_out = True
-                break
+    while True:
+        try:
+            status, body = await asyncio.to_thread(
+                _influx_post,
+                f'{url}{path}',
+                token,
+                {**payload, 'limit': page_limit, 'offset': offset},
+            )
+        except Exception as e:
+            return {'error': True, 'error_message': str(e) or 'network error', 'frames': frames}
 
-            try:
-                frame = msgpack.unpackb(msg.data, raw=False)
-            except Exception:
-                continue
+        # Token expired / invalid: refresh once, then retry the same page.
+        if status in (401, 403) and not tried_refresh:
+            tried_refresh = True
+            token, url = await ensure_influx_auth(ctx, force=True)
+            continue
 
+        if status != 200 or not (isinstance(body, dict) and body.get('status')):
+            code, error_message = _read_history_error(body, status)
+            return {'error': True, 'status': code, 'error_message': error_message, 'frames': frames}
+
+        data = body.get('data') or {}
+        for frame in (data.get('frames') or []):
             frames.append(frame)
 
-            if on_frame is not None:
-                try:
-                    await invoke_callback(on_frame, frame)
-                except Exception as cb_err:
-                    ctx.logger.error('on_frame callback threw', cb_err)
+        page = data.get('page') or {}
+        if not page.get('has_more'):
+            break
 
-            if isinstance(frame, dict) and frame.get('last'):
-                break
-    finally:
-        try:
-            await sub.unsubscribe()
-        except Exception:
-            pass
+        offset = page.get('next_offset')
+        tried_refresh = False  # allow one refresh per page if a long run outlives the token
 
-    if timed_out:
-        last = frames[-1] if frames else None
-        if not last or not (isinstance(last, dict) and last.get('last')):
-            raise RuntimeError(
-                f'stream_history: idle timeout after {idle_timeout}s on {request_subject}'
-            )
-
-    last = frames[-1] if frames else None
-    if isinstance(last, dict) and last.get('error'):
-        return {'status': status, 'frames': frames, 'error': True, 'error_message': last.get('error'), 'data': data_field}
-
-    return {'status': status, 'frames': frames, 'error': False, 'error_message': None, 'data': data_field}
+    return {'frames': frames, 'error': False, 'error_message': None}
 
 
 def topic_pattern_matcher(pattern_a, pattern_b):
